@@ -234,7 +234,15 @@ data/
 !.env.example
 
 #Mac OS files
-.DS_Store.tmp_pylibs/
-
 .DS_Store
 .tmp_pylibs/
+.agents
+.codex
+
+
+#Mentor Files
+Study_Plan/
+AGENTS.md
+CLAUDE.md
+MEPS_CONTEXT.md
+NOTEBOOK_REVIEW.md
