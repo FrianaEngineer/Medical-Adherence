@@ -234,7 +234,7 @@ data/
 !.env.example
 
 #Mac OS files
-.DS_Store.tmp_pylibs/
-
 .DS_Store
 .tmp_pylibs/
+
+Study_Plan/
