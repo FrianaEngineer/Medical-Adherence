@@ -10,9 +10,12 @@ Uses ``clean_meps`` for builds/exports and reads cached tables/graphs from
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
 
 from clean_meps import (
@@ -179,7 +182,7 @@ def apply_filters(
     a_col = age_col(year)
     p_col = povcat_col(year)
 
-    if "SEX" in out.columns:
+    if genders and "SEX" in out.columns:
         wanted_sex = {code for code, label in SEX_LABELS.items() if label in genders}
         out = out[out["SEX"].isin(wanted_sex)]
 
@@ -192,7 +195,7 @@ def apply_filters(
     if conditions and "ICD10CDX_LABEL" in out.columns:
         out = out[out["ICD10CDX_LABEL"].isin(conditions)]
 
-    if p_col in out.columns:
+    if incomes and p_col in out.columns:
         wanted_inc = {code for code, label in POVCAT_LABELS.items() if label in incomes}
         out = out[out[p_col].isin(wanted_inc)]
 
@@ -213,7 +216,10 @@ def drug_level_adherence(df: pd.DataFrame) -> pd.DataFrame:
     out = (
         df.dropna(subset=["meps_adherence_ratio"])
         .groupby(["RXNAME", "ICD10CDX_LABEL"], as_index=False)
-        .agg(**{"mean adherence": ("meps_adherence_ratio", "mean")})
+        .agg(**{
+            "mean adherence": ("meps_adherence_ratio", "mean"),
+            "n patients": ("DUPERSID", "nunique"),
+        })
     )
     return out.rename(columns={"RXNAME": "drug name", "ICD10CDX_LABEL": "condition name"})
 
@@ -222,14 +228,15 @@ def condition_level_adherence(df: pd.DataFrame) -> pd.DataFrame:
     out = (
         df.dropna(subset=["meps_adherence_ratio"])
         .groupby(["ICD10CDX_LABEL"], as_index=False)
-        .agg(**{"mean adherence": ("meps_adherence_ratio", "mean")})
+        .agg(**{
+            "mean adherence": ("meps_adherence_ratio", "mean"),
+            "n patients": ("DUPERSID", "nunique"),
+        })
     )
     return out.rename(columns={"ICD10CDX_LABEL": "condition name"})
 
 
 def patient_level_adherence(df: pd.DataFrame) -> pd.DataFrame:
-    import hashlib
-
     out = (
         df.dropna(subset=["meps_adherence_ratio"])
         .groupby(["DUPERSID"], as_index=False)
@@ -237,7 +244,7 @@ def patient_level_adherence(df: pd.DataFrame) -> pd.DataFrame:
     )
     # Stable anonymous label — do not expose survey person IDs in the UI
     out["patient"] = out["DUPERSID"].map(
-        lambda x: "P-" + hashlib.md5(str(x).encode("utf-8")).hexdigest()[:8]
+        lambda x: "P-" + hashlib.blake2b(str(x).encode("utf-8"), digest_size=4).hexdigest()
     )
     return out[["patient", "mean adherence"]]
 
@@ -251,8 +258,6 @@ def adherence_histogram_figure(
     ylabel: str,
 ):
     """Interactive histogram with bins colored by adherence threshold."""
-    import plotly.graph_objects as go
-
     clipped = values.dropna().clip(0, 100)
     bins = list(range(0, 110, 10))
     labels = [f"{bins[i]}-{bins[i + 1]}" for i in range(len(bins) - 1)]
@@ -318,8 +323,6 @@ def top_bottom_bar_figure(
     top_n: int = 10,
 ):
     """Horizontal bars for top/bottom groups; color by threshold."""
-    import plotly.express as px
-
     ranked = df.dropna(subset=[value_col]).sort_values(value_col, ascending=False)
     if ranked.empty:
         return None
@@ -364,12 +367,18 @@ def year_findings(year: int, threshold: int) -> dict | None:
     ratio = df["meps_adherence_ratio"]
     by_condition = (
         df.groupby(["ICD10CDX", "ICD10CDX_LABEL"], as_index=False)
-        .agg(mean_adherence=("meps_adherence_ratio", "mean"), n=("DUPERSID", "count"))
+        .agg(
+            mean_adherence=("meps_adherence_ratio", "mean"),
+            n_patients=("DUPERSID", "nunique"),
+        )
         .sort_values("mean_adherence", ascending=False)
     )
-    high = by_condition[by_condition["mean_adherence"] >= threshold]
-    low = by_condition.nsmallest(3, "mean_adherence")
-    top = by_condition.head(3)
+    # Condition grain is dense enough to require n >= 30 for headline top/low;
+    # threshold-meeting count uses the same floor so tiny conditions don't inflate it.
+    reliable = by_condition[by_condition["n_patients"] >= 30]
+    high = reliable[reliable["mean_adherence"] >= threshold]
+    low = reliable.nsmallest(3, "mean_adherence")
+    top = reliable.head(3)
 
     persons = df.drop_duplicates("DUPERSID")
     part_counts = (
@@ -378,14 +387,25 @@ def year_findings(year: int, threshold: int) -> dict | None:
         else {}
     )
 
+    # Lowest drug × condition combination, restricted to combos with ≥ 10 patients
+    # so a 1-patient noise row can't headline the summary.
     worst = None
-    top20 = load_table(year, "top_20_least_adherent_chronic_drugs.xlsx")
-    if top20 is not None and len(top20):
-        row = top20.iloc[0]
+    combos = (
+        df.dropna(subset=["meps_adherence_ratio"])
+        .groupby(["ICD10CDX_LABEL", "RXNAME"], as_index=False)
+        .agg(
+            ratio=("meps_adherence_ratio", "mean"),
+            n=("DUPERSID", "nunique"),
+        )
+    )
+    eligible = combos[combos["n"] >= 10].sort_values("ratio")
+    if len(eligible):
+        row = eligible.iloc[0]
         worst = {
-            "condition": str(row.get("ICD10CDX_LABEL", "")),
-            "drug": str(row.get("RXNAME", "")),
-            "ratio": float(row.get("meps_adherence_ratio", float("nan"))),
+            "condition": str(row["ICD10CDX_LABEL"]),
+            "drug": str(row["RXNAME"]),
+            "ratio": float(row["ratio"]),
+            "n": int(row["n"]),
         }
 
     return {
@@ -398,7 +418,8 @@ def year_findings(year: int, threshold: int) -> dict | None:
         "pct_ge_threshold": float((ratio >= threshold).mean() * 100),
         "pct_lt_10": float((ratio < 10).mean() * 100),
         "conditions_ge_threshold": int(len(high)),
-        "conditions_total": int(len(by_condition)),
+        "conditions_total": int(len(reliable)),
+        "conditions_total_all": int(len(by_condition)),
         "top_conditions": top.to_dict("records"),
         "low_conditions": low.to_dict("records"),
         "participation": part_counts,
@@ -425,25 +446,28 @@ def render_year_findings(year: int, findings: dict) -> None:
 - **Central tendency**: mean {findings['mean']:.1f}% · median {findings['median']:.1f}%.
 - **Threshold**: {findings['pct_ge_threshold']:.1f}% of person–drug pairs meet the
   {thr}% bar; {findings['pct_lt_10']:.1f}% fall below 10%.
-- **Conditions**: {findings['conditions_ge_threshold']} of {findings['conditions_total']}
-  condition groups average ≥ {thr}%.
+- **Conditions**: {findings['conditions_ge_threshold']} of
+  {findings['conditions_total']} condition groups (with ≥ 30 patients) average ≥ {thr}%.
+  Total distinct chronic conditions in the frame: {findings['conditions_total_all']}.
         """
     )
 
     top_bits = "; ".join(
-        f"{r['ICD10CDX_LABEL']} ({r['mean_adherence']:.0f}%)" for r in findings["top_conditions"]
+        f"{r['ICD10CDX_LABEL']} ({r['mean_adherence']:.0f}%, n={r['n_patients']})"
+        for r in findings["top_conditions"]
     )
     low_bits = "; ".join(
-        f"{r['ICD10CDX_LABEL']} ({r['mean_adherence']:.0f}%)" for r in findings["low_conditions"]
+        f"{r['ICD10CDX_LABEL']} ({r['mean_adherence']:.0f}%, n={r['n_patients']})"
+        for r in findings["low_conditions"]
     )
-    st.markdown(f"- **Highest mean condition adherence**: {top_bits}")
-    st.markdown(f"- **Lowest mean condition adherence**: {low_bits}")
+    st.markdown(f"- **Highest mean condition adherence** (≥ 30 patients): {top_bits}")
+    st.markdown(f"- **Lowest mean condition adherence** (≥ 30 patients): {low_bits}")
 
     if findings.get("worst"):
         w = findings["worst"]
         st.markdown(
-            f"- **Lowest condition × drug combination**: {w['condition']} × "
-            f"{w['drug']} ({w['ratio']:.2f}%)."
+            f"- **Lowest condition × drug combination** (≥ 10 patients): "
+            f"{w['condition']} × {w['drug']} ({w['ratio']:.1f}%, n={w['n']})."
         )
 
     if findings.get("participation"):
@@ -518,7 +542,10 @@ with st.sidebar:
         help="Exploratory cut for “meeting threshold” counts and tables — not a clinical guideline.",
     )
 
-    genders = st.multiselect("Gender", gender_options, key="filt_genders")
+    genders = st.multiselect(
+        "Gender", gender_options, key="filt_genders",
+        help="Leave empty to include all genders.",
+    )
     age_range = st.slider("Age", min_value=age_min, max_value=age_max, key="filt_age_range")
     conditions = st.multiselect(
         "Condition",
@@ -526,7 +553,10 @@ with st.sidebar:
         key="filt_conditions",
         help="Leave empty to include all conditions.",
     )
-    incomes = st.multiselect("Income", income_options, key="filt_incomes")
+    incomes = st.multiselect(
+        "Income", income_options, key="filt_incomes",
+        help="Leave empty to include all income levels.",
+    )
 
     st.divider()
     ready = exports_ready(year)
@@ -788,7 +818,6 @@ with tab_viz:
                 [
                     "Person–drug",
                     "Condition",
-                    "Drug subclass",
                     "Drug × condition",
                 ],
                 horizontal=True,
@@ -810,19 +839,6 @@ with tab_viz:
                 title = "Distribution of condition-level average adherence"
                 rank_df = by
                 label_col = "condition name"
-            elif level == "Drug subclass":
-                by = (
-                    frame.dropna(subset=["meps_adherence_ratio"])
-                    .groupby("TC1S1", as_index=False)
-                    .agg(**{"mean adherence": ("meps_adherence_ratio", "mean")})
-                    .rename(columns={"TC1S1": "drug subclass"})
-                )
-                values = by["mean adherence"]
-                ylabel = "Number of drug subclasses"
-                xlabel = "Average adherence by drug subclass (%)"
-                title = "Distribution of drug-subclass average adherence"
-                rank_df = by
-                label_col = "drug subclass"
             else:
                 by = drug_level_adherence(frame)
                 values = by["mean adherence"]
