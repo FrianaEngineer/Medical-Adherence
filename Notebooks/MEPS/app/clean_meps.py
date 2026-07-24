@@ -16,6 +16,9 @@ computed. ``log`` is a plain dict recording every stage's row/patient counts,
 columns dropped, and decisions taken, ready to render in a Streamlit sidebar
 or persist to ``decisions_log.md``.
 
+``export_merged_all_years()`` stacks each year's chronic-drug export into
+``output/all_years/tables/`` (also refreshed at the end of ``run_exports``).
+
 Column set is the lean set the notebooks currently emit — no scope creep to
 the Data Reference Guide's fuller Q3 feature list. Add those at the model
 step, not here.
@@ -155,6 +158,194 @@ def rx_prefix(year: int) -> str:
 def output_dirs(year: int) -> tuple[Path, Path]:
     base = NOTEBOOK_DIR / "output" / str(year)
     return base / "tables", base / "graphs"
+
+
+def all_years_output_dirs() -> tuple[Path, Path]:
+    base = NOTEBOOK_DIR / "output" / "all_years"
+    return base / "tables", base / "graphs"
+
+
+ALL_YEARS_PARQUET = "new_grouped_merge_df_chronic_drugs.parquet"
+ALL_YEARS_XLSX = "new_grouped_merge_df_chronic_drugs.xlsx"
+ALL_YEARS_FILTER_OPTIONS = "filter_options.json"
+
+
+def _harmonize_year_columns(df: pd.DataFrame, year: int) -> pd.DataFrame:
+    """Rename AGE/POVCAT/INSCOV{yy} → shared names and attach YEAR."""
+    out = normalize_age_column(df, year).copy()
+    yy = year % 100
+    renames = {}
+    for src, dest in (
+        (f"AGE{yy:02d}X", "AGE"),
+        (f"POVCAT{yy:02d}", "POVCAT"),
+        (f"INSCOV{yy:02d}", "INSCOV"),
+    ):
+        if src in out.columns and dest not in out.columns:
+            renames[src] = dest
+    if renames:
+        out = out.rename(columns=renames)
+    out["YEAR"] = year
+    return out
+
+
+def _stringify_age_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Make AGE / AGEyyX parquet-safe (mixed int + ``unknown`` → string)."""
+    out = df.copy()
+    age_cols = [
+        c for c in out.columns
+        if c == "AGE" or (c.startswith("AGE") and c.endswith("X"))
+    ]
+    for col in age_cols:
+        def _one(v):
+            if pd.isna(v):
+                return pd.NA
+            if isinstance(v, str) and v.strip().lower() in {"unknown", "-1", "nan", "none"}:
+                return "unknown"
+            try:
+                return str(int(float(v)))
+            except (TypeError, ValueError):
+                s = str(v).strip()
+                return "unknown" if s.lower() in {"unknown", "-1"} else s
+
+        out[col] = out[col].map(_one).astype("string")
+    return out
+
+
+def _read_year_chronic_frame(year: int) -> pd.DataFrame | None:
+    """Prefer per-year parquet cache; fall back to the Excel export.
+
+    When only Excel exists, also write a parquet twin so the next merge is fast.
+    """
+    tables = output_dirs(year)[0]
+    parquet = tables / "new_grouped_merge_df_chronic_drugs.parquet"
+    xlsx = tables / "new_grouped_merge_df_chronic_drugs.xlsx"
+    if parquet.exists():
+        return pd.read_parquet(parquet)
+    if xlsx.exists():
+        try:
+            df = pd.read_excel(xlsx, engine="calamine")
+        except Exception:
+            df = pd.read_excel(xlsx)
+        try:
+            _stringify_age_columns(df).to_parquet(parquet, index=False)
+            print(f"[all_years]   cached year parquet -> {parquet.name}")
+        except Exception as exc:
+            print(f"[all_years]   warn: could not write year parquet: {exc}")
+        return df
+    return None
+
+
+def _write_all_years_filter_options(merged: pd.DataFrame, tables_dir: Path) -> Path:
+    """Sidebar filter metadata so the app need not scan the full frame."""
+    import json
+
+    age = pd.to_numeric(merged["AGE"], errors="coerce") if "AGE" in merged.columns else pd.Series(dtype=float)
+    conditions = (
+        sorted(merged["ICD10CDX_LABEL"].dropna().astype(str).unique().tolist())
+        if "ICD10CDX_LABEL" in merged.columns
+        else []
+    )
+    n_single = 0
+    n_cond = len(conditions)
+    if "ICD10CDX_LABEL" in merged.columns and "DUPERSID" in merged.columns:
+        vc = merged.groupby("ICD10CDX_LABEL")["DUPERSID"].nunique()
+        n_single = int((vc == 1).sum())
+        n_cond = int(len(vc))
+
+    payload = {
+        "years": sorted(int(y) for y in merged["YEAR"].dropna().unique()) if "YEAR" in merged.columns else [],
+        "n_rows": int(len(merged)),
+        "n_patients": int(merged["DUPERSID"].nunique()) if "DUPERSID" in merged.columns else 0,
+        "n_conditions": n_cond,
+        "conditions_with_one_person": n_single,
+        "age_min": int(age.min()) if len(age.dropna()) else 0,
+        "age_max": int(age.max()) if len(age.dropna()) else 85,
+        "conditions": conditions,
+        "has_sex": "SEX" in merged.columns,
+        "has_povcat": "POVCAT" in merged.columns,
+        "has_inscov": "INSCOV" in merged.columns,
+    }
+    path = tables_dir / ALL_YEARS_FILTER_OPTIONS
+    path.write_text(json.dumps(payload, indent=2))
+    return path
+
+
+def export_merged_all_years(meps_dir: str | Path | None = None) -> Path | None:
+    """Build the all-years Streamlit cache under ``output/all_years/tables/``.
+
+    Writes a fast **parquet** cache (what the app loads), plus filter-option JSON
+    and a short summary. Run from the terminal::
+
+        cd Notebooks/MEPS/app
+        python clean_meps.py cache-all-years
+
+    Returns the parquet path, or ``None`` if no year exports exist yet.
+    """
+    _ = meps_dir  # reserved for API symmetry with run_exports
+    tables_dir, _graphs_dir = all_years_output_dirs()
+    tables_dir.mkdir(parents=True, exist_ok=True)
+
+    frames: list[pd.DataFrame] = []
+    for year in sorted(YEAR_FILES):
+        print(f"[all_years] loading {year} …")
+        df = _read_year_chronic_frame(year)
+        if df is None:
+            print(f"[all_years]   skip {year}: no chronic-drug export")
+            continue
+        frames.append(_harmonize_year_columns(df, year))
+        print(f"[all_years]   {len(df):,} rows")
+
+    if not frames:
+        print("[all_years] nothing to merge — run `python clean_meps.py export --year YYYY` first")
+        return None
+
+    merged = pd.concat(frames, ignore_index=True)
+    merged = _stringify_age_columns(merged)
+
+    parquet_path = tables_dir / ALL_YEARS_PARQUET
+    merged.to_parquet(parquet_path, index=False)
+    print(f"[all_years] wrote {parquet_path} ({len(merged):,} rows)")
+
+    # Optional Excel copy for manual inspection (slower; skip if huge preference)
+    # Keep a slim summary xlsx instead of rewriting the full frame to Excel.
+
+    if "ICD10CDX_LABEL" in merged.columns and "DUPERSID" in merged.columns:
+        cond_counts = (
+            merged.groupby("ICD10CDX_LABEL", as_index=False)
+            .agg(n_patients=("DUPERSID", "nunique"))
+            .sort_values("n_patients")
+        )
+        singles = cond_counts[cond_counts["n_patients"] == 1]
+        summary = pd.DataFrame(
+            {
+                "metric": [
+                    "years_included",
+                    "rows",
+                    "unique_patients",
+                    "unique_conditions",
+                    "conditions_with_one_person",
+                ],
+                "value": [
+                    ",".join(str(y) for y in sorted(merged["YEAR"].unique())),
+                    len(merged),
+                    int(merged["DUPERSID"].nunique()),
+                    int(len(cond_counts)),
+                    int(len(singles)),
+                ],
+            }
+        )
+        summary.to_excel(tables_dir / "all_years_merge_summary.xlsx", index=False)
+        singles.rename(columns={"ICD10CDX_LABEL": "condition name"}).to_excel(
+            tables_dir / "conditions_one_person.xlsx", index=False
+        )
+        print(
+            f"[all_years] conditions with 1 person: "
+            f"{len(singles):,} / {len(cond_counts):,}"
+        )
+
+    opts = _write_all_years_filter_options(merged, tables_dir)
+    print(f"[all_years] wrote {opts}")
+    return parquet_path
 
 
 # ---------------------------------------------------------------------------
@@ -940,6 +1131,10 @@ def run_exports(year: int, meps_dir: str | Path | None = None, write_decisions_l
         f"{df_final['DUPERSID'].nunique():,} patients"
     )
     _save_table(ctx, df_final, "new_grouped_merge_df_chronic_drugs.xlsx")
+    # Fast cache for all-years merge / Streamlit
+    pq = ctx.tables_dir / "new_grouped_merge_df_chronic_drugs.parquet"
+    _stringify_age_columns(df_final).to_parquet(pq, index=False)
+    ctx.info(f"saved table -> output/{ctx.year}/tables/{pq.name}  ({len(df_final):,} rows)")
     _save_table(
         ctx,
         pd.Series(
@@ -1016,6 +1211,12 @@ def run_exports(year: int, meps_dir: str | Path | None = None, write_decisions_l
     ctx.log(f"Graphs : {graphs_dir}")
     ctx.log("=" * 60)
 
+    # Keep the cross-year merge in sync whenever any single year is exported.
+    ctx.step("Refresh all-years merged chronic-drug table")
+    merged_path = export_merged_all_years(meps_dir=dir_)
+    if merged_path is not None:
+        ctx.info(f"all-years merge -> {merged_path}")
+
 
 # ---------------------------------------------------------------------------
 # Legacy helper (kept for backwards compatibility with any code that imported
@@ -1041,3 +1242,47 @@ def clean_h248a(df: pd.DataFrame) -> pd.DataFrame:
     if "RXDRGNAM" in df.columns:
         df = df[~df["RXDRGNAM"].astype(str).str.startswith("-")].copy()
     return df
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+def _cli(argv: list[str] | None = None) -> int:
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog="clean_meps",
+        description="MEPS adherence build / export / all-years cache",
+    )
+    sub = parser.add_subparsers(dest="cmd", required=True)
+
+    p_cache = sub.add_parser(
+        "cache-all-years",
+        help="Build the all-years parquet cache + filter_options.json for Streamlit",
+    )
+    p_cache.add_argument(
+        "--meps-dir",
+        default=None,
+        help="Optional override for the MEPS data directory",
+    )
+
+    p_export = sub.add_parser("export", help="Run full year export (tables + graphs)")
+    p_export.add_argument("--year", type=int, required=True, choices=sorted(YEAR_FILES))
+    p_export.add_argument("--meps-dir", default=None)
+
+    args = parser.parse_args(argv)
+
+    if args.cmd == "cache-all-years":
+        path = export_merged_all_years(meps_dir=args.meps_dir)
+        return 0 if path is not None else 1
+
+    if args.cmd == "export":
+        run_exports(args.year, meps_dir=args.meps_dir)
+        return 0
+
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(_cli())

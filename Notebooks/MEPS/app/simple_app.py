@@ -4,13 +4,16 @@ Run from this directory:
 
     streamlit run simple_app.py
 
+Prebuild the all-years cache (recommended; do this in a terminal, not in the UI)::
+
+    python clean_meps.py cache-all-years
+
 Uses ``clean_meps`` for builds/exports and reads cached tables/graphs from
-``../output/<year>/`` when they already exist.
+``../output/<year>/`` (and ``../output/all_years/``) when they already exist.
 """
 
 from __future__ import annotations
 
-import hashlib
 from pathlib import Path
 
 import pandas as pd
@@ -21,14 +24,23 @@ import streamlit as st
 from clean_meps import (
     YEAR_FILES,
     build,
+    export_merged_all_years,
     normalize_age_column,
     output_dirs,
+    all_years_output_dirs,
     resolve_meps_dir,
     run_exports,
     write_log,
 )
 
+# Cache filenames (match clean_meps.ALL_YEARS_*); kept local so Streamlit
+# hot-reload does not break if it briefly holds a stale clean_meps module.
+ALL_YEARS_PARQUET = "new_grouped_merge_df_chronic_drugs.parquet"
+ALL_YEARS_FILTER_OPTIONS = "filter_options.json"
+
 YEARS = sorted(YEAR_FILES)
+ALL_YEARS_LABEL = "All years"
+YEAR_OPTIONS = [ALL_YEARS_LABEL, *YEARS]
 
 # MEPS codebook labels
 SEX_LABELS = {1: "Male", 2: "Female"}
@@ -38,6 +50,11 @@ POVCAT_LABELS = {
     3: "Low income",
     4: "Middle income",
     5: "High income",
+}
+# INSCOV{yy}: 1 any private, 2 public only → Insured; 3 (or 0 if remapped) → Uninsured
+INSCOV_FILTER_LABELS = {
+    "Insured": {1, 2},
+    "Uninsured": {0, 3},
 }
 
 st.set_page_config(
@@ -61,8 +78,10 @@ def graphs_dir(year: int) -> Path:
     return output_dirs(year)[1]
 
 
-def table_path(year: int, name: str) -> Path:
-    return tables_dir(year) / name
+def table_path(year: int | str, name: str) -> Path:
+    if year == "all_years" or year is None:
+        return all_years_output_dirs()[0] / name
+    return tables_dir(int(year)) / name
 
 
 def graph_path(year: int, name: str) -> Path:
@@ -77,6 +96,112 @@ def povcat_col(year: int) -> str:
     return f"POVCAT{year % 100:02d}"
 
 
+def inscov_col(year: int) -> str:
+    return f"INSCOV{year % 100:02d}"
+
+
+def _harmonize_year_columns(df: pd.DataFrame, year: int) -> pd.DataFrame:
+    """Rename AGE/POVCAT/INSCOV{yy} to shared names so years can be stacked."""
+    out = df.copy()
+    renames = {}
+    for src, dest in (
+        (age_col(year), "AGE"),
+        (povcat_col(year), "POVCAT"),
+        (inscov_col(year), "INSCOV"),
+    ):
+        if src in out.columns and dest not in out.columns:
+            renames[src] = dest
+    if renames:
+        out = out.rename(columns=renames)
+    out["YEAR"] = year
+    return out
+
+
+@st.cache_data(show_spinner=False)
+def load_merged_frame() -> pd.DataFrame | None:
+    """Load the prebuilt all-years parquet cache (from ``cache-all-years``)."""
+    tables = all_years_output_dirs()[0]
+    parquet = tables / ALL_YEARS_PARQUET
+    xlsx = tables / "new_grouped_merge_df_chronic_drugs.xlsx"
+    if parquet.exists():
+        return pd.read_parquet(parquet)
+    if xlsx.exists():
+        # Legacy fallback if only the old Excel merge exists
+        return pd.read_excel(xlsx)
+    return None
+
+
+@st.cache_data(show_spinner=False)
+def load_all_years_filter_options() -> dict | None:
+    """Precomputed sidebar options for the all-years view."""
+    import json
+
+    path = all_years_output_dirs()[0] / ALL_YEARS_FILTER_OPTIONS
+    if not path.exists():
+        return None
+    return json.loads(path.read_text())
+
+
+def resolve_active_frame(year_selection: int | str) -> tuple[pd.DataFrame | None, int | None, str]:
+    """Return (frame, year_or_None_for_all, display_label)."""
+    if year_selection == ALL_YEARS_LABEL:
+        return load_merged_frame(), None, ALL_YEARS_LABEL
+    y = int(year_selection)
+    return prepare_frame(load_main_frame(y), y), y, str(y)
+
+
+def sample_size_summary(
+    df: pd.DataFrame, *, min_n: int = 10
+) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
+    """Patient counts for conditions and drug–condition pairs vs ``min_n``.
+
+    Returns (condition_table, pair_table, summary_counts).
+    """
+    empty = pd.DataFrame()
+    summary = {
+        "n_conditions": 0,
+        "conditions_lt": 0,
+        "conditions_ge": 0,
+        "n_pairs": 0,
+        "pairs_lt": 0,
+        "pairs_ge": 0,
+        "min_n": min_n,
+    }
+    if df is None or df.empty or "ICD10CDX_LABEL" not in df.columns:
+        return empty, empty, summary
+
+    cond = (
+        df.groupby("ICD10CDX_LABEL", as_index=False)
+        .agg(**{"n patients": ("DUPERSID", "nunique")})
+        .rename(columns={"ICD10CDX_LABEL": "condition name"})
+        .sort_values("n patients", ascending=False)
+    )
+    summary["n_conditions"] = int(len(cond))
+    summary["conditions_lt"] = int((cond["n patients"] < min_n).sum())
+    summary["conditions_ge"] = int((cond["n patients"] >= min_n).sum())
+
+    pairs = empty
+    if "RXNAME" in df.columns:
+        pairs = (
+            df.groupby(["ICD10CDX_LABEL", "RXNAME"], as_index=False)
+            .agg(**{"n patients": ("DUPERSID", "nunique")})
+            .rename(columns={"ICD10CDX_LABEL": "condition name", "RXNAME": "drug name"})
+            .sort_values("n patients", ascending=False)
+        )
+        summary["n_pairs"] = int(len(pairs))
+        summary["pairs_lt"] = int((pairs["n patients"] < min_n).sum())
+        summary["pairs_ge"] = int((pairs["n patients"] >= min_n).sum())
+
+    return cond, pairs, summary
+
+
+def exports_ready_selection(year_selection: int | str) -> bool:
+    if year_selection == ALL_YEARS_LABEL:
+        tables = all_years_output_dirs()[0]
+        return (tables / ALL_YEARS_PARQUET).exists() or (
+            tables / "new_grouped_merge_df_chronic_drugs.xlsx"
+        ).exists()
+    return exports_ready(int(year_selection))
 @st.cache_data(show_spinner=False)
 def load_table(year: int, name: str) -> pd.DataFrame | None:
     path = table_path(year, name)
@@ -166,27 +291,35 @@ def prepare_frame(df: pd.DataFrame | None, year: int) -> pd.DataFrame | None:
 
 def apply_filters(
     df: pd.DataFrame,
-    year: int,
+    year: int | None,
     *,
     genders: list[str],
     age_range: tuple[int, int],
     conditions: list[str],
     incomes: list[str],
+    insurance: list[str],
 ) -> pd.DataFrame:
     """Filter person–drug rows by sidebar demographic controls.
 
-    Empty gender or income selection → no rows. Empty condition selection → all conditions.
-    Age slider applies to numeric ages; rows with age ``unknown`` are kept.
+    Empty gender, income, or insurance selection → no rows. Empty condition selection → all
+    conditions. Age slider applies to numeric ages; rows with age ``unknown`` are kept.
+    ``year`` may be ``None`` for the merged all-years frame (uses AGE / POVCAT / INSCOV).
     """
     out = df
-    a_col = age_col(year)
-    p_col = povcat_col(year)
+    if year is None:
+        a_col = "AGE" if "AGE" in out.columns else None
+        p_col = "POVCAT" if "POVCAT" in out.columns else None
+        i_col = "INSCOV" if "INSCOV" in out.columns else None
+    else:
+        a_col = age_col(year) if age_col(year) in out.columns else ("AGE" if "AGE" in out.columns else None)
+        p_col = povcat_col(year) if povcat_col(year) in out.columns else ("POVCAT" if "POVCAT" in out.columns else None)
+        i_col = inscov_col(year) if inscov_col(year) in out.columns else ("INSCOV" if "INSCOV" in out.columns else None)
 
     if genders and "SEX" in out.columns:
         wanted_sex = {code for code, label in SEX_LABELS.items() if label in genders}
         out = out[out["SEX"].isin(wanted_sex)]
 
-    if a_col in out.columns and age_range is not None:
+    if a_col is not None and age_range is not None:
         lo, hi = age_range
         age_num = pd.to_numeric(out[a_col], errors="coerce")
         is_unknown = out[a_col].astype(str).str.lower().eq("unknown")
@@ -195,21 +328,51 @@ def apply_filters(
     if conditions and "ICD10CDX_LABEL" in out.columns:
         out = out[out["ICD10CDX_LABEL"].isin(conditions)]
 
-    if incomes and p_col in out.columns:
+    if incomes and p_col is not None:
         wanted_inc = {code for code, label in POVCAT_LABELS.items() if label in incomes}
         out = out[out[p_col].isin(wanted_inc)]
+
+    if insurance and i_col is not None:
+        wanted_ins: set[int] = set()
+        for label in insurance:
+            wanted_ins |= INSCOV_FILTER_LABELS.get(label, set())
+        out = out[pd.to_numeric(out[i_col], errors="coerce").isin(wanted_ins)]
 
     return out
 
 
-def apply_adherence_view(df: pd.DataFrame, view: str, value_col: str = "mean adherence") -> pd.DataFrame:
-    """Return all / top-10 / bottom-10 rows by mean adherence."""
-    ranked = df.sort_values(value_col, ascending=False).reset_index(drop=True)
+def apply_adherence_view(
+    df: pd.DataFrame,
+    view: str,
+    value_col: str = "mean adherence",
+    *,
+    min_n: int = 10,
+) -> pd.DataFrame:
+    """Return all / top-10 / bottom-10 rows by mean adherence.
+
+    Top/bottom 10 only keep groups with ``n patients >= min_n`` when that
+    column is present (skips sparse 1-patient perfect/zero scores).
+    ``All`` is sorted by ``n patients`` descending when available.
+    """
+    ranked = df
+    if view.startswith("Top 10") and "n patients" in ranked.columns:
+        ranked = ranked[ranked["n patients"] >= min_n]
     if view.startswith("Top 10 most"):
-        return ranked.head(10)
+        return (
+            ranked.sort_values(value_col, ascending=False)
+            .head(10)
+            .reset_index(drop=True)
+        )
     if view.startswith("Top 10 least"):
-        return ranked.tail(10).sort_values(value_col, ascending=True).reset_index(drop=True)
-    return ranked
+        return (
+            ranked.sort_values(value_col, ascending=True)
+            .head(10)
+            .reset_index(drop=True)
+        )
+    # All — prefer largest samples first
+    if "n patients" in ranked.columns:
+        return ranked.sort_values("n patients", ascending=False).reset_index(drop=True)
+    return ranked.sort_values(value_col, ascending=False).reset_index(drop=True)
 
 
 def drug_level_adherence(df: pd.DataFrame) -> pd.DataFrame:
@@ -236,17 +399,47 @@ def condition_level_adherence(df: pd.DataFrame) -> pd.DataFrame:
     return out.rename(columns={"ICD10CDX_LABEL": "condition name"})
 
 
-def patient_level_adherence(df: pd.DataFrame) -> pd.DataFrame:
+def assign_drug_category(df: pd.DataFrame) -> pd.DataFrame:
+    """Prefer TC1 therapeutic class; fall back to TC1S1 subclass when TC1 is missing."""
+    out = df.copy()
+    has_tc1 = "TC1" in out.columns
+    has_tc1s1 = "TC1S1" in out.columns
+    if not has_tc1 and not has_tc1s1:
+        out["drug category"] = pd.NA
+        return out
+
+    if has_tc1:
+        tc1 = pd.to_numeric(out["TC1"], errors="coerce")
+    else:
+        tc1 = pd.Series(pd.NA, index=out.index, dtype="Float64")
+
+    if has_tc1s1:
+        tc1s1 = pd.to_numeric(out["TC1S1"], errors="coerce")
+    else:
+        tc1s1 = pd.Series(pd.NA, index=out.index, dtype="Float64")
+
+    use_tc1 = tc1.notna()
+    labels = pd.Series(pd.NA, index=out.index, dtype="object")
+    labels.loc[use_tc1] = "TC1-" + tc1.loc[use_tc1].astype(int).astype(str)
+    labels.loc[~use_tc1 & tc1s1.notna()] = (
+        "TC1S1-" + tc1s1.loc[~use_tc1 & tc1s1.notna()].astype(int).astype(str)
+    )
+    out["drug category"] = labels
+    return out
+
+
+def drug_category_adherence(df: pd.DataFrame) -> pd.DataFrame:
+    """Mean adherence by drug category (TC1, else TC1S1)."""
+    tagged = assign_drug_category(df)
     out = (
-        df.dropna(subset=["meps_adherence_ratio"])
-        .groupby(["DUPERSID"], as_index=False)
-        .agg(**{"mean adherence": ("meps_adherence_ratio", "mean")})
+        tagged.dropna(subset=["meps_adherence_ratio", "drug category"])
+        .groupby(["drug category"], as_index=False)
+        .agg(**{
+            "mean adherence": ("meps_adherence_ratio", "mean"),
+            "n patients": ("DUPERSID", "nunique"),
+        })
     )
-    # Stable anonymous label — do not expose survey person IDs in the UI
-    out["patient"] = out["DUPERSID"].map(
-        lambda x: "P-" + hashlib.blake2b(str(x).encode("utf-8"), digest_size=4).hexdigest()
-    )
-    return out[["patient", "mean adherence"]]
+    return out
 
 
 def adherence_histogram_figure(
@@ -313,7 +506,7 @@ def adherence_histogram_figure(
     return fig
 
 
-def top_bottom_bar_figure(
+def top_bottom_bar_figures(
     df: pd.DataFrame,
     *,
     label_col: str,
@@ -321,40 +514,47 @@ def top_bottom_bar_figure(
     threshold: int,
     title: str,
     top_n: int = 10,
-):
-    """Horizontal bars for top/bottom groups; color by threshold."""
+) -> tuple | None:
+    """Two separate horizontal bar charts: top-N and bottom-N by mean adherence."""
     ranked = df.dropna(subset=[value_col]).sort_values(value_col, ascending=False)
     if ranked.empty:
         return None
+
     top = ranked.head(top_n).copy()
-    bottom = ranked.tail(top_n).sort_values(value_col, ascending=True).copy()
-    top["group"] = f"Top {top_n}"
-    bottom["group"] = f"Bottom {top_n}"
-    plot_df = pd.concat([top, bottom], ignore_index=True)
-    plot_df["meets_threshold"] = plot_df[value_col] >= threshold
-    # Truncate long labels for readability
-    plot_df["_label"] = plot_df[label_col].astype(str).str.slice(0, 48)
-    fig = px.bar(
-        plot_df,
-        x=value_col,
-        y="_label",
-        color="meets_threshold",
-        color_discrete_map={True: "#5cb85c", False: "#d9534f"},
-        facet_col="group",
-        orientation="h",
-        title=f"{title} (threshold {threshold}%)",
-        labels={
-            value_col: "Mean adherence (%)",
-            "_label": "",
-            "meets_threshold": f"≥ {threshold}%",
-        },
-        category_orders={"group": [f"Top {top_n}", f"Bottom {top_n}"]},
-        hover_data={label_col: True, "_label": False},
+    bottom = ranked.tail(top_n).copy()
+
+    def _one_chart(piece: pd.DataFrame, *, heading: str, color: str):
+        plot_df = piece.sort_values(value_col, ascending=True).copy()
+        plot_df["_label"] = plot_df[label_col].astype(str).str.slice(0, 48)
+        fig = px.bar(
+            plot_df,
+            x=value_col,
+            y="_label",
+            orientation="h",
+            title=heading,
+            labels={value_col: "Mean adherence (%)", "_label": ""},
+            hover_data={label_col: True, "_label": False},
+        )
+        fig.update_traces(marker_color=color)
+        fig.update_layout(
+            height=420,
+            margin=dict(t=60, l=10, r=20, b=40),
+            xaxis=dict(range=[0, 100]),
+            showlegend=False,
+        )
+        return fig
+
+    top_fig = _one_chart(
+        top,
+        heading=f"Top {top_n} — highest mean adherence",
+        color="#5cb85c",
     )
-    fig.update_yaxes(matches=None, showticklabels=True, autorange="reversed")
-    fig.update_layout(height=520, margin=dict(t=80, l=10))
-    fig.for_each_annotation(lambda a: a.update(text=a.text.split("=")[-1]))
-    return fig
+    bottom_fig = _one_chart(
+        bottom,
+        heading=f"Bottom {top_n} — lowest mean adherence",
+        color="#d9534f",
+    )
+    return top_fig, bottom_fig
 
 
 @st.cache_data(show_spinner=False)
@@ -487,29 +687,52 @@ def render_year_findings(year: int, findings: dict) -> None:
 
 with st.sidebar:
     st.header("Controls")
-    year = st.selectbox("MEPS year", YEARS, index=YEARS.index(2023) if 2023 in YEARS else 0)
+    year_selection = st.selectbox(
+        "MEPS year",
+        YEAR_OPTIONS,
+        index=YEAR_OPTIONS.index(2023) if 2023 in YEAR_OPTIONS else 0,
+    )
+    frame_preview, year, year_label = resolve_active_frame(year_selection)
 
     st.divider()
     st.subheader("Filters")
 
-    # Filter option lists from the final chronic + PSTATS frame
-    _preview = prepare_frame(load_main_frame(year), year)
+    # Filter option lists: prefer all-years JSON cache so sidebar stays fast
+    _preview = frame_preview
+    _ay_opts = load_all_years_filter_options() if year is None else None
 
     gender_options = list(SEX_LABELS.values())
     income_options = [POVCAT_LABELS[k] for k in sorted(POVCAT_LABELS)]
+    insurance_options = list(INSCOV_FILTER_LABELS.keys())
 
-    if _preview is not None and age_col(year) in _preview.columns:
-        age_vals = pd.to_numeric(_preview[age_col(year)], errors="coerce").dropna()
-        age_min, age_max = int(age_vals.min()), int(age_vals.max())
+    if _ay_opts is not None:
+        age_min = int(_ay_opts.get("age_min", 0))
+        age_max = int(_ay_opts.get("age_max", 85))
         if age_min >= age_max:
             age_max = age_min + 1
+        condition_options = list(_ay_opts.get("conditions") or [])
     else:
-        age_min, age_max = 0, 85
+        age_candidates = []
+        if _preview is not None:
+            for col in (
+                (["AGE"] if year is None else [age_col(year), "AGE"])
+            ):
+                if col in _preview.columns:
+                    age_candidates.append(pd.to_numeric(_preview[col], errors="coerce"))
+        if age_candidates:
+            age_vals = pd.concat(age_candidates).dropna()
+            age_min, age_max = int(age_vals.min()), int(age_vals.max())
+            if age_min >= age_max:
+                age_max = age_min + 1
+        else:
+            age_min, age_max = 0, 85
 
-    if _preview is not None and "ICD10CDX_LABEL" in _preview.columns:
-        condition_options = sorted(_preview["ICD10CDX_LABEL"].dropna().astype(str).unique())
-    else:
-        condition_options = []
+        if _preview is not None and "ICD10CDX_LABEL" in _preview.columns:
+            condition_options = sorted(
+                _preview["ICD10CDX_LABEL"].dropna().astype(str).unique()
+            )
+        else:
+            condition_options = []
 
     def _reset_filters() -> None:
         st.session_state.filt_threshold = 60
@@ -517,9 +740,15 @@ with st.sidebar:
         st.session_state.filt_age_range = (age_min, age_max)
         st.session_state.filt_conditions = []
         st.session_state.filt_incomes = income_options.copy()
+        st.session_state.filt_insurance = insurance_options.copy()
 
     if "filt_threshold" not in st.session_state:
         _reset_filters()
+    # Migrate away from the old 3-way insurance labels if still in session
+    if "filt_insurance" not in st.session_state or not set(
+        st.session_state.get("filt_insurance", [])
+    ).issubset(set(insurance_options)):
+        st.session_state.filt_insurance = insurance_options.copy()
 
     # Keep age range valid when year / data bounds change
     cur_age = st.session_state.get("filt_age_range", (age_min, age_max))
@@ -557,40 +786,85 @@ with st.sidebar:
         "Income", income_options, key="filt_incomes",
         help="Leave empty to include all income levels.",
     )
+    insurance = st.multiselect(
+        "Insurance",
+        insurance_options,
+        key="filt_insurance",
+        help=(
+            "Insured = INSCOV 1 (any private) or 2 (public only). "
+            "Uninsured = INSCOV 3 (or 0 if remapped). Leave empty to include all."
+        ),
+    )
 
     st.divider()
-    ready = exports_ready(year)
+    ready = exports_ready_selection(year_selection)
     st.write("Data:", "✅ ready" if ready else "⚠️ missing — run below")
 
+    if year is None:
+        st.caption(
+            "All-years cache: run in a terminal (faster than Refresh):\n"
+            "`python clean_meps.py cache-all-years`"
+        )
+
     if st.button("Refresh year data", type="primary", use_container_width=True):
-        with st.spinner(f"Refreshing {year} data… this can take several minutes"):
+        with st.spinner(
+            f"Refreshing {year_label} data… this can take several minutes"
+        ):
             try:
-                run_exports(year)
+                if year is None:
+                    # Prefer terminal `cache-all-years`; UI path reuses year exports
+                    for y in YEARS:
+                        if not exports_ready(y):
+                            run_exports(y)
+                    export_merged_all_years()
+                else:
+                    run_exports(year)
+                    export_merged_all_years()
                 load_table.clear()
                 list_graphs.clear()
                 list_tables.clear()
                 cached_build.clear()
                 load_sex_lookup.clear()
                 year_findings.clear()
-                st.success(f"{year} data refreshed.")
+                load_merged_frame.clear()
+                load_all_years_filter_options.clear()
+                st.success(f"{year_label} data refreshed.")
                 st.rerun()
             except Exception as exc:
                 st.error(f"Refresh failed: {exc}")
 
     if st.button("Rebuild analysis frame", use_container_width=True):
         cached_build.clear()
-        with st.spinner(f"Rebuilding {year} analysis frame…"):
+        load_merged_frame.clear()
+        load_all_years_filter_options.clear()
+        with st.spinner(f"Rebuilding {year_label} analysis frame…"):
             try:
-                df_live, log_dict = cached_build(
-                    year,
-                    drug_chronic_only=True,
-                    pstats_denominator=True,
-                )
-                write_log(log_dict)
+                if year is None:
+                    for y in YEARS:
+                        df_live, log_dict = cached_build(
+                            y,
+                            drug_chronic_only=True,
+                            pstats_denominator=True,
+                        )
+                        write_log(log_dict)
+                    export_merged_all_years()
+                    merged = load_merged_frame()
+                    n_rows = 0 if merged is None else len(merged)
+                    n_pat = 0 if merged is None else int(merged["DUPERSID"].nunique())
+                else:
+                    df_live, log_dict = cached_build(
+                        year,
+                        drug_chronic_only=True,
+                        pstats_denominator=True,
+                    )
+                    write_log(log_dict)
+                    export_merged_all_years()
+                    n_rows = len(df_live)
+                    n_pat = int(df_live["DUPERSID"].nunique())
                 st.success(
-                    f"Built {len(df_live):,} rows / "
-                    f"{df_live['DUPERSID'].nunique():,} patients"
+                    f"Built {n_rows:,} rows / {n_pat:,} patients ({year_label})"
                 )
+                st.rerun()
             except Exception as exc:
                 st.error(f"Rebuild failed: {exc}")
 
@@ -611,7 +885,8 @@ with tab_home:
     st.title("MEPS Medical Adherence")
     st.write(
         "A multi-year look at how consistently people fill chronic medications, "
-        "using AHRQ’s Medical Expenditure Panel Survey (MEPS) for 2020–2023."
+        "using the Agency for Healthcare Research and Quality (AHRQ) "
+        "Medical Expenditure Panel Survey (MEPS) for 2020–2023."
     )
 
     st.subheader("What is medical adherence?")
@@ -628,18 +903,20 @@ costs, especially for chronic conditions that require continuous therapy.
     st.subheader("What this project is about")
     st.markdown(
         """
-In this project, I use AHRQ’s nationally representative MEPS data from 2020–2023 to study
-how consistently people maintain medication coverage for chronic conditions. Because MEPS is
-a survey rather than a pharmacy transaction log, it does not provide exact refill dates or a
+In this project, I use nationally representative data from the Agency for Healthcare Research
+and Quality (AHRQ) Medical Expenditure Panel Survey (MEPS) for 2020–2023 to study how
+consistently people maintain medication coverage for chronic conditions. Because MEPS is a
+survey rather than a pharmacy transaction log, it does not provide exact refill dates or a
 ready-made adherence measure, so I created the measure through feature engineering. I linked
 prescription records to chronic conditions, excluded medications used for acute conditions or
 temporary flare-ups, removed records with missing or unusable values, and combined multiple
 prescription, days-supply, and survey-participation columns to estimate each person’s total
-medication coverage. I also used survey response information to determine whether a person
-participated for the full year or had a shorter observation period, allowing me to calculate
-an appropriate number of eligible days. For each person–drug pair, I calculated a PDC-style
-adherence ratio by dividing the estimated total days supplied by the eligible observation days
-and capping the result at 100%. I use a 60% threshold as an exploratory indicator of possible
+medication coverage. I also used survey response information (PSTATS — person status /
+participation codes) to determine whether a person participated for the full year or had a
+shorter observation period, allowing me to calculate an appropriate number of eligible days.
+For each person–drug pair, I calculated a Proportion of Days Covered (PDC)–style adherence
+ratio by dividing the estimated total days supplied by the eligible observation days and
+capping the result at 100%. I use a 60% threshold as an exploratory indicator of possible
 non-adherence rather than as a clinical standard. In addition to medication coverage, I examine
 factors that may influence adherence, including economic status, insurance coverage, medication
 costs, age, sex, chronic-condition burden, and other patient characteristics. The goal of the
@@ -700,12 +977,12 @@ caution. The sidebar threshold is currently **{threshold}%**.
 # ---- Analysis -------------------------------------------------------------
 
 with tab_analysis:
-    st.header(f"Analysis · {year}")
+    st.header(f"Analysis · {year_label}")
 
-    frame = prepare_frame(load_main_frame(year), year)
+    frame = frame_preview
 
     if frame is None:
-        st.warning("Data not found for this year. Use Refresh year data in the sidebar.")
+        st.warning("Data not found for this selection. Use Refresh year data in the sidebar.")
     else:
         n_before = len(frame)
         frame = apply_filters(
@@ -715,10 +992,27 @@ with tab_analysis:
             age_range=age_range,
             conditions=conditions,
             incomes=incomes,
+            insurance=insurance,
         )
         st.caption(
             f"Filtered rows: {n_before:,} → {len(frame):,} · threshold {threshold}%"
         )
+
+        # Sample-size split at 10 unique patients (after filters)
+        cond_counts, _pair_counts, size_sum = sample_size_summary(frame, min_n=10)
+        if size_sum["n_conditions"]:
+            st.caption(
+                f"Conditions: **{size_sum['conditions_lt']:,}** with &lt; 10 patients · "
+                f"**{size_sum['conditions_ge']:,}** with ≥ 10 "
+                f"(of {size_sum['n_conditions']:,}). "
+                f"Drug–condition pairs: **{size_sum['pairs_lt']:,}** &lt; 10 · "
+                f"**{size_sum['pairs_ge']:,}** ≥ 10 "
+                f"(of {size_sum['n_pairs']:,})."
+            )
+            with st.expander("Conditions by patient count"):
+                st.dataframe(cond_counts, use_container_width=True, hide_index=True)
+        else:
+            st.caption("No conditions available under the current filters.")
 
         if frame.empty:
             st.warning("No rows match the current filters.")
@@ -728,11 +1022,12 @@ with tab_analysis:
                 ["All", "Top 10 most adherent", "Top 10 least adherent"],
                 horizontal=True,
                 key="analysis_view",
+                help="Top 10 lists only include groups with ≥ 10 patients.",
             )
+            if view.startswith("Top 10"):
+                st.caption("Top / bottom 10 restricted to groups with ≥ 10 patients.")
 
-            drug_tab, cond_tab, patient_tab = st.tabs(
-                ["Drug level", "Condition level", "Patient level"]
-            )
+            drug_tab, cond_tab = st.tabs(["Drug level", "Condition level"])
 
             with drug_tab:
                 drug_df = apply_adherence_view(drug_level_adherence(frame), view)
@@ -744,19 +1039,15 @@ with tab_analysis:
                 st.dataframe(cond_df, use_container_width=True, hide_index=True)
                 st.caption(f"{len(cond_df):,} condition rows")
 
-            with patient_tab:
-                patient_df = apply_adherence_view(patient_level_adherence(frame), view)
-                st.dataframe(patient_df, use_container_width=True, hide_index=True)
-                st.caption(f"{len(patient_df):,} patient rows")
-
 
 # ---- Methodology ----------------------------------------------------------
 
 with tab_method:
-    st.header(f"Methodology · {year}")
+    st.header(f"Methodology · {year_label}")
     st.write(
-        "This section summarizes how the adherence measure is built from MEPS "
-        "prescription, condition, and survey-participation information."
+        "This section summarizes how the adherence measure is built from the "
+        "Medical Expenditure Panel Survey (MEPS) prescription, condition, and "
+        "survey-participation information."
     )
 
     st.subheader("Pipeline overview")
@@ -770,7 +1061,8 @@ with tab_method:
 6. Collapse to one row per person–drug pair
 7. Keep chronic medications only (exclude acute / flare-up drugs)
 8. Add demographics and compute each person’s eligible days from survey participation
-9. Compute a PDC-style adherence ratio:
+   (PSTATS — person status / participation codes)
+9. Compute a Proportion of Days Covered (PDC)–style adherence ratio:
    estimated days supplied ÷ eligible days × 100, capped at 100%
         """
     )
@@ -786,15 +1078,29 @@ with tab_method:
         """
     )
 
+    st.subheader("Acronyms")
+    st.markdown(
+        """
+| Acronym | Meaning |
+|--------|---------|
+| **AHRQ** | Agency for Healthcare Research and Quality |
+| **MEPS** | Medical Expenditure Panel Survey (sponsored by AHRQ) |
+| **PDC** | Proportion of Days Covered — share of eligible days with medication supply on hand |
+| **PSTATS** | Person status codes in MEPS that record survey participation / disposition by round |
+| **ICD-10** | International Classification of Diseases, 10th Revision (condition diagnosis codes) |
+| **NDC** | National Drug Code (medication product identifier) |
+        """
+    )
+
 
 # ---- Visualization --------------------------------------------------------
 
 with tab_viz:
-    st.header(f"Visualization · {year}")
+    st.header(f"Visualization · {year_label}")
 
-    frame = prepare_frame(load_main_frame(year), year)
+    frame = frame_preview
     if frame is None:
-        st.warning("Data not found for this year. Use Refresh year data in the sidebar.")
+        st.warning("Data not found for this selection. Use Refresh year data in the sidebar.")
     else:
         n_before = len(frame)
         frame = apply_filters(
@@ -804,6 +1110,7 @@ with tab_viz:
             age_range=age_range,
             conditions=conditions,
             incomes=incomes,
+            insurance=insurance,
         )
         st.caption(
             f"Charts update with sidebar filters · "
@@ -819,6 +1126,7 @@ with tab_viz:
                     "Person–drug",
                     "Condition",
                     "Drug × condition",
+                    "Drug category (TC1 / TC1S1)",
                 ],
                 horizontal=True,
                 key="viz_level",
@@ -839,7 +1147,7 @@ with tab_viz:
                 title = "Distribution of condition-level average adherence"
                 rank_df = by
                 label_col = "condition name"
-            else:
+            elif level == "Drug × condition":
                 by = drug_level_adherence(frame)
                 values = by["mean adherence"]
                 ylabel = "Number of drug × condition pairs"
@@ -849,6 +1157,20 @@ with tab_viz:
                     label=by["drug name"].astype(str) + " · " + by["condition name"].astype(str)
                 )
                 label_col = "label"
+            else:
+                by = drug_category_adherence(frame)
+                values = by["mean adherence"]
+                ylabel = "Number of drug categories"
+                xlabel = "Average adherence by drug category (%)"
+                title = "Distribution of drug-category average adherence (TC1, else TC1S1)"
+                rank_df = by
+                label_col = "drug category"
+                n_tc1 = int(by["drug category"].astype(str).str.startswith("TC1-").sum()) if len(by) else 0
+                n_tc1s1 = int(by["drug category"].astype(str).str.startswith("TC1S1-").sum()) if len(by) else 0
+                st.caption(
+                    f"Category rule: use **TC1** when present; otherwise **TC1S1**. "
+                    f"This selection has {n_tc1:,} TC1 groups and {n_tc1s1:,} TC1S1 fallback groups."
+                )
 
             fig = adherence_histogram_figure(
                 values,
@@ -867,12 +1189,24 @@ with tab_viz:
 
             if rank_df is not None and label_col is not None and len(rank_df):
                 st.subheader("Top / bottom by mean adherence")
-                rank_fig = top_bottom_bar_figure(
-                    rank_df,
-                    label_col=label_col,
-                    value_col="mean adherence",
-                    threshold=threshold,
-                    title=title.replace("Distribution of ", ""),
+                min_n = 10
+                if "n patients" in rank_df.columns:
+                    rank_df = rank_df[rank_df["n patients"] >= min_n].copy()
+                st.caption(
+                    f"{title.replace('Distribution of ', '')} "
+                    f"(threshold {threshold}% · only groups with ≥ {min_n} patients)"
                 )
-                if rank_fig is not None:
-                    st.plotly_chart(rank_fig, use_container_width=True)
+                if rank_df.empty:
+                    st.info(f"No groups have ≥ {min_n} patients under the current filters.")
+                else:
+                    rank_figs = top_bottom_bar_figures(
+                        rank_df,
+                        label_col=label_col,
+                        value_col="mean adherence",
+                        threshold=threshold,
+                        title=title.replace("Distribution of ", ""),
+                    )
+                    if rank_figs is not None:
+                        top_fig, bottom_fig = rank_figs
+                        st.plotly_chart(top_fig, use_container_width=True)
+                        st.plotly_chart(bottom_fig, use_container_width=True)
