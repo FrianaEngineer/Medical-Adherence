@@ -187,6 +187,36 @@ With 2023 only, the model can predict low 2023 continuity, not future non-adhere
 | `SEX` | Sex feature. |
 | `RACETHX` | Race/ethnicity feature. |
 | `REGION23` | Region feature. Year-suffix changes per year. |
+| `EDUCYR` | Years of education (0–17). Sentinels: −1 inapplicable, −7 refused, −8 DK. |
+| `MARRY31X` / `MARRY42X` / `MARRY53X` / `MARRY23X` | Marital status by round (use year-end `MARRY23X` with backfill). |
+| `REGION31` / `REGION42` / `REGION53` / `REGION23` | Census region by round (use year-end `REGION23` with backfill). |
+
+### Constructed person features (2023_clean `model_df`)
+
+| New column | Built from | Notes |
+|---|---|---|
+| `MARRYXX` | `MARRY23X` ← `53` ← `42` ← `31` | First non-negative round walking newest → oldest. |
+| `REGIONXX` | `REGION23` ← `53` ← `42` ← `31` | Same backfill rule. |
+| `medication_dose` | `RXSTRENG` | Numeric strength; −15 / text combos → missing. |
+| `medication_dose_unit` | `RXSTRUNT` | e.g. MG, MCG; −15 → missing. |
+| `medication_freq` | `RXQUANTY / RXDAYSUP` | Pills (or form units) per day; only if qty > 0 and days in 1…989; **>10 → missing**. |
+| `medication_qty_unit` | `RXFORM` | What quantity counts (TABS, CAPS, SOLN, …); −15 → missing. |
+
+**`MARRYXX` codes:** −8 DK, −7 refused, −1 inapplicable; 1 married, 2 widowed, 3 divorced, 4 separated, 5 never married, 6 under age 16, 7–10 married/widowed/divorced/separated in round.
+
+**`REGIONXX` codes:** −1 inapplicable; 1 Northeast, 2 Midwest, 3 South, 4 West.
+
+**`EDUCYR` codes:** −8 DK, −7 refused, −1 inapplicable; 0 no school/K only; 1–8 elementary; 9–11 HS incomplete; 12 grade 12; 13–16 college years; 17 5+ years college.
+
+### From `h248a.xlsx` for dose / quantity
+
+| Column | Use |
+|---|---|
+| `RXSTRENG` | Medication strength amount. |
+| `RXSTRUNT` | Strength unit (MG, MCG, …). |
+| `RXQUANTY` | Quantity dispensed (count of form units). Official name is `RXQUANTY`, not `RXQUANTITY`. |
+| `RXFORM` | Dosage form / quantity counting unit (TABS, CAPS, …). |
+| `RXDAYSUP` | Days supplied (denominator for pills/day). |
 
 ## Survey Design Columns
 
