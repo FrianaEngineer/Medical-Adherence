@@ -37,6 +37,7 @@ from clean_meps import (
 # hot-reload does not break if it briefly holds a stale clean_meps module.
 ALL_YEARS_PARQUET = "new_grouped_merge_df_chronic_drugs.parquet"
 ALL_YEARS_FILTER_OPTIONS = "filter_options.json"
+BRIDGE_PARQUET = "patient_drug_condition_bridge.parquet"
 
 YEARS = sorted(YEAR_FILES)
 ALL_YEARS_LABEL = "All years"
@@ -142,6 +143,55 @@ def load_all_years_filter_options() -> dict | None:
     return json.loads(path.read_text())
 
 
+@st.cache_data(show_spinner=False)
+def load_bridge_frame() -> pd.DataFrame | None:
+    """Load the all-years patient-drug × condition bridge (one row per pair × chronic ICD)."""
+    tables = all_years_output_dirs()[0]
+    parquet = tables / BRIDGE_PARQUET
+    if not parquet.exists():
+        st.warning(
+            "Bridge parquet not found — condition-level views will fall back to primary-ICD "
+            "attribution. Rerun `python clean_meps.py cache-all-years` to enable full "
+            "multi-condition attribution."
+        )
+        return None
+    return pd.read_parquet(parquet)
+
+
+@st.cache_data(show_spinner=False)
+def load_year_bridge(year: int) -> pd.DataFrame | None:
+    """Load the per-year patient-drug × condition bridge."""
+    parquet = tables_dir(year) / BRIDGE_PARQUET
+    if not parquet.exists():
+        return None
+    return pd.read_parquet(parquet)
+
+
+def resolve_active_bridge(year_selection: int | str) -> pd.DataFrame | None:
+    if year_selection == ALL_YEARS_LABEL:
+        return load_bridge_frame()
+    return load_year_bridge(int(year_selection))
+
+
+def condition_view(pd_df: pd.DataFrame | None, bridge: pd.DataFrame | None) -> pd.DataFrame | None:
+    """Expand patient_drug rows to one-row-per-linked-chronic-condition via the bridge.
+
+    Filters must already be applied to ``pd_df``; the inner join propagates them.
+    Falls back to ``pd_df`` unchanged (primary-ICD attribution) when the bridge is missing.
+    """
+    if bridge is None or pd_df is None or pd_df.empty:
+        return pd_df
+    drop_cols = [
+        c
+        for c in ("ICD10CDX", "ICD10CDX_LABEL", "primary_ICD10CDX", "primary_ICD10CDX_LABEL")
+        if c in pd_df.columns
+    ]
+    keys = ["DUPERSID", "DRUGIDX"]
+    if "YEAR" in pd_df.columns and "YEAR" in bridge.columns:
+        keys.append("YEAR")
+    return bridge.merge(pd_df.drop(columns=drop_cols), on=keys, how="inner")
+
+
 def resolve_active_frame(year_selection: int | str) -> tuple[pd.DataFrame | None, int | None, str]:
     """Return (frame, year_or_None_for_all, display_label)."""
     if year_selection == ALL_YEARS_LABEL:
@@ -151,11 +201,15 @@ def resolve_active_frame(year_selection: int | str) -> tuple[pd.DataFrame | None
 
 
 def sample_size_summary(
-    df: pd.DataFrame, *, min_n: int = 10
+    df: pd.DataFrame,
+    bridge: pd.DataFrame | None = None,
+    *,
+    min_n: int = 10,
 ) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
     """Patient counts for conditions and drug–condition pairs vs ``min_n``.
 
-    Returns (condition_table, pair_table, summary_counts).
+    Returns (condition_table, pair_table, summary_counts). Uses the bridge so a
+    patient-drug pair contributes to every chronic condition it links to.
     """
     empty = pd.DataFrame()
     summary = {
@@ -170,8 +224,12 @@ def sample_size_summary(
     if df is None or df.empty or "ICD10CDX_LABEL" not in df.columns:
         return empty, empty, summary
 
+    cv = condition_view(df, bridge)
+    if cv is None or cv.empty or "ICD10CDX_LABEL" not in cv.columns:
+        return empty, empty, summary
+
     cond = (
-        df.groupby("ICD10CDX_LABEL", as_index=False)
+        cv.groupby("ICD10CDX_LABEL", as_index=False)
         .agg(**{"n patients": ("DUPERSID", "nunique")})
         .rename(columns={"ICD10CDX_LABEL": "condition name"})
         .sort_values("n patients", ascending=False)
@@ -181,9 +239,9 @@ def sample_size_summary(
     summary["conditions_ge"] = int((cond["n patients"] >= min_n).sum())
 
     pairs = empty
-    if "RXNAME" in df.columns:
+    if "RXNAME" in cv.columns:
         pairs = (
-            df.groupby(["ICD10CDX_LABEL", "RXNAME"], as_index=False)
+            cv.groupby(["ICD10CDX_LABEL", "RXNAME"], as_index=False)
             .agg(**{"n patients": ("DUPERSID", "nunique")})
             .rename(columns={"ICD10CDX_LABEL": "condition name", "RXNAME": "drug name"})
             .sort_values("n patients", ascending=False)
@@ -375,9 +433,12 @@ def apply_adherence_view(
     return ranked.sort_values(value_col, ascending=False).reset_index(drop=True)
 
 
-def drug_level_adherence(df: pd.DataFrame) -> pd.DataFrame:
+def drug_level_adherence(df: pd.DataFrame, bridge: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Mean adherence by drug × condition. Routes through the bridge so a pair contributes
+    to every chronic condition it links to; falls back to primary-ICD when bridge is None."""
+    base = condition_view(df, bridge)
     out = (
-        df.dropna(subset=["meps_adherence_ratio"])
+        base.dropna(subset=["meps_adherence_ratio"])
         .groupby(["RXNAME", "ICD10CDX_LABEL"], as_index=False)
         .agg(**{
             "mean adherence": ("meps_adherence_ratio", "mean"),
@@ -387,9 +448,11 @@ def drug_level_adherence(df: pd.DataFrame) -> pd.DataFrame:
     return out.rename(columns={"RXNAME": "drug name", "ICD10CDX_LABEL": "condition name"})
 
 
-def condition_level_adherence(df: pd.DataFrame) -> pd.DataFrame:
+def condition_level_adherence(df: pd.DataFrame, bridge: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Mean adherence by condition, routed through the bridge to include secondary chronic ICDs."""
+    base = condition_view(df, bridge)
     out = (
-        df.dropna(subset=["meps_adherence_ratio"])
+        base.dropna(subset=["meps_adherence_ratio"])
         .groupby(["ICD10CDX_LABEL"], as_index=False)
         .agg(**{
             "mean adherence": ("meps_adherence_ratio", "mean"),
@@ -565,8 +628,11 @@ def year_findings(year: int, threshold: int) -> dict | None:
         return None
 
     ratio = df["meps_adherence_ratio"]
+    bridge = load_year_bridge(year)
+    # Condition-level frame: bridge-joined so a pair counts for every linked chronic ICD.
+    cond_frame = condition_view(df, bridge)
     by_condition = (
-        df.groupby(["ICD10CDX", "ICD10CDX_LABEL"], as_index=False)
+        cond_frame.groupby(["ICD10CDX", "ICD10CDX_LABEL"], as_index=False)
         .agg(
             mean_adherence=("meps_adherence_ratio", "mean"),
             n_patients=("DUPERSID", "nunique"),
@@ -588,10 +654,11 @@ def year_findings(year: int, threshold: int) -> dict | None:
     )
 
     # Lowest drug × condition combination, restricted to combos with ≥ 10 patients
-    # so a 1-patient noise row can't headline the summary.
+    # so a 1-patient noise row can't headline the summary. Uses the bridge so a pair
+    # with multiple linked chronic ICDs contributes to every combo.
     worst = None
     combos = (
-        df.dropna(subset=["meps_adherence_ratio"])
+        cond_frame.dropna(subset=["meps_adherence_ratio"])
         .groupby(["ICD10CDX_LABEL", "RXNAME"], as_index=False)
         .agg(
             ratio=("meps_adherence_ratio", "mean"),
@@ -612,7 +679,7 @@ def year_findings(year: int, threshold: int) -> dict | None:
         "rows": int(len(df)),
         "patients": int(df["DUPERSID"].nunique()),
         "drugs": int(df["RXNAME"].nunique()),
-        "conditions": int(df["ICD10CDX"].nunique()),
+        "conditions": int(cond_frame["ICD10CDX"].nunique()) if "ICD10CDX" in cond_frame.columns else int(df["ICD10CDX"].nunique()),
         "mean": float(ratio.mean()),
         "median": float(ratio.median()),
         "pct_ge_threshold": float((ratio >= threshold).mean() * 100),
@@ -828,6 +895,8 @@ with st.sidebar:
                 year_findings.clear()
                 load_merged_frame.clear()
                 load_all_years_filter_options.clear()
+                load_bridge_frame.clear()
+                load_year_bridge.clear()
                 st.success(f"{year_label} data refreshed.")
                 st.rerun()
             except Exception as exc:
@@ -837,6 +906,8 @@ with st.sidebar:
         cached_build.clear()
         load_merged_frame.clear()
         load_all_years_filter_options.clear()
+        load_bridge_frame.clear()
+        load_year_bridge.clear()
         with st.spinner(f"Rebuilding {year_label} analysis frame…"):
             try:
                 if year is None:
@@ -980,6 +1051,7 @@ with tab_analysis:
     st.header(f"Analysis · {year_label}")
 
     frame = frame_preview
+    bridge = resolve_active_bridge(year_selection)
 
     if frame is None:
         st.warning("Data not found for this selection. Use Refresh year data in the sidebar.")
@@ -997,9 +1069,14 @@ with tab_analysis:
         st.caption(
             f"Filtered rows: {n_before:,} → {len(frame):,} · threshold {threshold}%"
         )
+        if bridge is None:
+            st.info(
+                "Condition-level view uses primary ICD only — rerun the export to enable "
+                "full multi-condition attribution."
+            )
 
         # Sample-size split at 10 unique patients (after filters)
-        cond_counts, _pair_counts, size_sum = sample_size_summary(frame, min_n=10)
+        cond_counts, _pair_counts, size_sum = sample_size_summary(frame, bridge, min_n=10)
         if size_sum["n_conditions"]:
             st.caption(
                 f"Conditions: **{size_sum['conditions_lt']:,}** with &lt; 10 patients · "
@@ -1030,12 +1107,12 @@ with tab_analysis:
             drug_tab, cond_tab = st.tabs(["Drug level", "Condition level"])
 
             with drug_tab:
-                drug_df = apply_adherence_view(drug_level_adherence(frame), view)
+                drug_df = apply_adherence_view(drug_level_adherence(frame, bridge), view)
                 st.dataframe(drug_df, use_container_width=True, hide_index=True)
                 st.caption(f"{len(drug_df):,} drug × condition rows")
 
             with cond_tab:
-                cond_df = apply_adherence_view(condition_level_adherence(frame), view)
+                cond_df = apply_adherence_view(condition_level_adherence(frame, bridge), view)
                 st.dataframe(cond_df, use_container_width=True, hide_index=True)
                 st.caption(f"{len(cond_df):,} condition rows")
 
@@ -1099,6 +1176,7 @@ with tab_viz:
     st.header(f"Visualization · {year_label}")
 
     frame = frame_preview
+    bridge = resolve_active_bridge(year_selection)
     if frame is None:
         st.warning("Data not found for this selection. Use Refresh year data in the sidebar.")
     else:

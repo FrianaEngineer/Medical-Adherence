@@ -4,15 +4,26 @@ Single public entry points:
 
     from clean_meps import build, run_exports, write_log
 
-    df, log = build(2023)         # or 2020, 2021, 2022
+    patient_drug, bridge, log = build(2023)   # or 2020, 2021, 2022
     run_exports(2023)             # full notebook-style tables + graphs -> output/2023/
     write_log(log)                # appends a run block to decisions_log.md
 
-``df`` matches the frame Friana's ``YYYY_clean.ipynb`` produces at the end of
-cell 56: one row per (DUPERSID, DRUGIDX) after the CLNK join, the is_chronic
-ICD filter, and the chronic-drug filter — with the PSTATS-based
-reference-days denominator and MPR-style ``meps_adherence_ratio`` already
-computed. ``log`` is a plain dict recording every stage's row/patient counts,
+``patient_drug`` matches the frame Friana's ``YYYY_clean.ipynb`` produces at
+the end of cell 56: one row per (DUPERSID, DRUGIDX) after the CLNK join, the
+is_chronic ICD filter, and the chronic-drug filter — with the PSTATS-based
+reference-days denominator and PDC-style ``meps_adherence_ratio`` already
+computed. RXDAYSUP is summed on deduplicated fills so a single fill linked to
+multiple chronic conditions is not double-counted. Multi-condition context
+is preserved via ``n_chronic_conditions`` + ``chronic_conditions`` (comma-
+joined ICD list) columns and via the ``bridge`` frame.
+
+``bridge`` is one row per (DUPERSID, DRUGIDX, ICD10CDX, CONDIDX) — the
+patient-drug × chronic-condition mapping. Use it for condition-level rollups
+(never sum days-supply through the patient_drug ICD alias — that column is
+only the *primary* ICD encountered). Carries no days-supply so it cannot
+inflate totals if summed by accident.
+
+``log`` is a plain dict recording every stage's row/patient counts,
 columns dropped, and decisions taken, ready to render in a Streamlit sidebar
 or persist to ``decisions_log.md``.
 
@@ -168,6 +179,8 @@ def all_years_output_dirs() -> tuple[Path, Path]:
 ALL_YEARS_PARQUET = "new_grouped_merge_df_chronic_drugs.parquet"
 ALL_YEARS_XLSX = "new_grouped_merge_df_chronic_drugs.xlsx"
 ALL_YEARS_FILTER_OPTIONS = "filter_options.json"
+BRIDGE_PARQUET = "patient_drug_condition_bridge.parquet"
+ALL_YEARS_BRIDGE_PARQUET = "patient_drug_condition_bridge.parquet"
 
 
 def _harmonize_year_columns(df: pd.DataFrame, year: int) -> pd.DataFrame:
@@ -235,6 +248,27 @@ def _read_year_chronic_frame(year: int) -> pd.DataFrame | None:
     return None
 
 
+def _read_year_bridge_frame(year: int) -> pd.DataFrame | None:
+    """Load the per-year patient_drug × condition bridge (parquet or xlsx)."""
+    tables = output_dirs(year)[0]
+    parquet = tables / BRIDGE_PARQUET
+    xlsx = tables / "patient_drug_condition_bridge.xlsx"
+    if parquet.exists():
+        return pd.read_parquet(parquet)
+    if xlsx.exists():
+        try:
+            df = pd.read_excel(xlsx, engine="calamine")
+        except Exception:
+            df = pd.read_excel(xlsx)
+        try:
+            df.to_parquet(parquet, index=False)
+            print(f"[all_years]   cached bridge parquet -> {parquet.name}")
+        except Exception as exc:
+            print(f"[all_years]   warn: could not write bridge parquet: {exc}")
+        return df
+    return None
+
+
 def _write_all_years_filter_options(merged: pd.DataFrame, tables_dir: Path) -> Path:
     """Sidebar filter metadata so the app need not scan the full frame."""
     import json
@@ -286,6 +320,7 @@ def export_merged_all_years(meps_dir: str | Path | None = None) -> Path | None:
     tables_dir.mkdir(parents=True, exist_ok=True)
 
     frames: list[pd.DataFrame] = []
+    bridge_frames: list[pd.DataFrame] = []
     for year in sorted(YEAR_FILES):
         print(f"[all_years] loading {year} …")
         df = _read_year_chronic_frame(year)
@@ -294,6 +329,16 @@ def export_merged_all_years(meps_dir: str | Path | None = None) -> Path | None:
             continue
         frames.append(_harmonize_year_columns(df, year))
         print(f"[all_years]   {len(df):,} rows")
+
+        br = _read_year_bridge_frame(year)
+        if br is not None:
+            br = br.copy()
+            br["YEAR"] = year
+            bridge_frames.append(br)
+            print(f"[all_years]   bridge: {len(br):,} rows")
+        else:
+            print(f"[all_years]   no bridge yet for {year} — rerun `python "
+                  f"clean_meps.py export --year {year}` after the CLNK-dedup fix")
 
     if not frames:
         print("[all_years] nothing to merge — run `python clean_meps.py export --year YYYY` first")
@@ -305,6 +350,12 @@ def export_merged_all_years(meps_dir: str | Path | None = None) -> Path | None:
     parquet_path = tables_dir / ALL_YEARS_PARQUET
     merged.to_parquet(parquet_path, index=False)
     print(f"[all_years] wrote {parquet_path} ({len(merged):,} rows)")
+
+    if bridge_frames:
+        bridge_all = pd.concat(bridge_frames, ignore_index=True)
+        bridge_path = tables_dir / ALL_YEARS_BRIDGE_PARQUET
+        bridge_all.to_parquet(bridge_path, index=False)
+        print(f"[all_years] wrote {bridge_path} ({len(bridge_all):,} rows)")
 
     # Optional Excel copy for manual inspection (slower; skip if huge preference)
     # Keep a slim summary xlsx instead of rewriting the full frame to Excel.
@@ -469,7 +520,7 @@ def build(
     meps_dir: str | Path | None = None,
     drug_chronic_only: bool = True,
     pstats_denominator: bool = True,
-) -> tuple[pd.DataFrame, RunLog]:
+) -> tuple[pd.DataFrame, pd.DataFrame, RunLog]:
     """Build ``new_grouped_merge_df`` for one year.
 
     Parameters
@@ -488,11 +539,15 @@ def build(
 
     Returns
     -------
-    (df, log)
-        ``df`` has one row per (DUPERSID, DRUGIDX) with adherence and
-        reference-days columns. ``log`` records every stage's counts and
-        decisions — feed it to ``write_log(log)`` to append to
-        ``decisions_log.md``.
+    (patient_drug, bridge, log)
+        ``patient_drug`` has one row per (DUPERSID, DRUGIDX) with adherence
+        and reference-days columns; ``primary_ICD10CDX`` and its alias
+        ``ICD10CDX`` carry the first-encountered chronic ICD, and
+        ``n_chronic_conditions`` + ``chronic_conditions`` (comma-joined)
+        preserve the full linkage set. ``bridge`` is one row per (DUPERSID,
+        DRUGIDX, ICD10CDX, CONDIDX) — use it for condition-level rollups.
+        ``log`` records every stage's counts and decisions — feed it to
+        ``write_log(log)`` to append to ``decisions_log.md``.
     """
     if year not in YEAR_FILES:
         raise ValueError(f"year must be one of {sorted(YEAR_FILES)}; got {year}")
@@ -608,16 +663,42 @@ def build(
                        patients_out=merged["DUPERSID"].nunique(),
                        detail="LEFT JOIN on (DUPERSID, LINKIDX=EVNTIDX); drops "
                               "Rx rows whose CLNK link isn't to a chronic "
-                              "condition. This is where non-chronic-condition "
-                              "fills leave the pipeline."))
+                              "condition. Rx rows linked to N chronic "
+                              "conditions expand to N rows here; that "
+                              "expansion is unwound in the next step so "
+                              "RXDAYSUP is not summed N times."))
     log.decide(
         "Rx→condition join uses (DUPERSID, LINKIDX=EVNTIDX) — never DUPERSID "
         "alone (Cartesian explosion) and never LINKIDX alone (round-scoped). "
         "Documented in MEPS_SCHEMA_NOTES."
     )
 
+    # -- 6b. Dedup fills before summing days ---------------------------
+    # RXRECIDX is unique per fill in the raw rx frame. After the CLNK-condition
+    # merge above, a fill linked to N chronic conditions appears N times. Sum
+    # RXDAYSUP on the deduplicated (person, drug, fill) rows so each fill's
+    # days count once. Condition context is preserved via the bridge below.
+    fills = merged.drop_duplicates(subset=["DUPERSID", "DRUGIDX", "RXRECIDX"])
+    log.add(StageEntry("dedup_fills_before_summing_days",
+                       rows_in=len(merged), rows_out=len(fills),
+                       patients_in=merged["DUPERSID"].nunique(),
+                       patients_out=fills["DUPERSID"].nunique(),
+                       detail="One row per (DUPERSID, DRUGIDX, RXRECIDX). "
+                              "Removes CLNK multi-condition duplication so "
+                              "RXDAYSUP is not double-counted when a fill "
+                              "links to more than one chronic ICD."))
+    log.decide(
+        "CLNK multi-condition duplication fix: RXDAYSUP is summed on "
+        "deduplicated fills (one row per RXRECIDX per person-drug), not on "
+        "the rx×condition join. Previous behaviour inflated days when a fill "
+        "linked to multiple chronic conditions and silently kept only the "
+        "first ICD. Multi-condition context is preserved via "
+        "n_chronic_conditions + chronic_conditions list on patient_drug and "
+        "the patient_drug_condition bridge frame."
+    )
+
     # -- 7. Groupby to person-drug grain -------------------------------
-    gm = merged.groupby(["DUPERSID", "DRUGIDX"]).agg(
+    gm = fills.groupby(["DUPERSID", "DRUGIDX"]).agg(
         RXDAYSUP=("RXDAYSUP", "sum"),
         RXXP=(xp_col, "mean"),
         RXSF=(sf_col, "mean"),
@@ -626,23 +707,67 @@ def build(
         RXBEGYRX=("RXBEGYRX", "first"),
         TC1=("TC1", "first"),
         TC1S1=("TC1S1", "first"),
-        ICD10CDX=("ICD10CDX", "first"),
-        ICD10CDX_LABEL=("ICD10CDX_LABEL", "first"),
+        primary_ICD10CDX=("ICD10CDX", "first"),
+        primary_ICD10CDX_LABEL=("ICD10CDX_LABEL", "first"),
     ).reset_index()
     gm = gm.rename(columns={"RXXP": xp_col, "RXSF": sf_col})
-    log.add(StageEntry("groupby_person_drug",
-                       rows_in=len(merged), rows_out=len(gm),
-                       patients_in=merged["DUPERSID"].nunique(),
-                       patients_out=gm["DUPERSID"].nunique(),
-                       detail="One row per (DUPERSID, DRUGIDX). If a fill was "
-                              "CLNK-linked to multiple chronic ICDs, only the "
-                              "first-encountered ICD is kept (documented "
-                              "attribution choice)."))
-    log.decide(
-        "Multi-condition fills attribute to the first ICD encountered in the "
-        "join. Alternative: allocate days across linked conditions. Deferred "
-        "until multi-attribution is a modeling requirement."
+
+    # Attach multi-condition context from the un-deduped merged frame so we
+    # keep every chronic ICD the fill was CLNK-linked to.
+    cond_context = (
+        merged.dropna(subset=["ICD10CDX"])
+        .groupby(["DUPERSID", "DRUGIDX"])
+        .agg(
+            n_chronic_conditions=("ICD10CDX", "nunique"),
+            chronic_conditions=(
+                "ICD10CDX",
+                lambda s: ",".join(sorted(s.astype(str).unique())),
+            ),
+        )
+        .reset_index()
     )
+    gm = gm.merge(cond_context, on=["DUPERSID", "DRUGIDX"], how="left")
+    gm["n_chronic_conditions"] = gm["n_chronic_conditions"].fillna(0).astype(int)
+    gm["chronic_conditions"] = gm["chronic_conditions"].fillna("")
+
+    # Backwards-compat aliases so notebooks, run_exports and the all-years
+    # cache keep working. primary_* names make it explicit that these are
+    # a choice, not the full picture.
+    gm["ICD10CDX"] = gm["primary_ICD10CDX"]
+    gm["ICD10CDX_LABEL"] = gm["primary_ICD10CDX_LABEL"]
+
+    log.add(StageEntry("groupby_person_drug",
+                       rows_in=len(fills), rows_out=len(gm),
+                       patients_in=fills["DUPERSID"].nunique(),
+                       patients_out=gm["DUPERSID"].nunique(),
+                       detail="One row per (DUPERSID, DRUGIDX). RXDAYSUP is "
+                              "summed on the deduped fills; ICD10CDX = "
+                              "primary_ICD10CDX kept as first-encountered "
+                              "chronic ICD (aliased so downstream code that "
+                              "reads ICD10CDX keeps working); "
+                              "n_chronic_conditions + chronic_conditions list "
+                              "cover the full linkage set."))
+
+    # -- 7b. Patient-drug × condition bridge ---------------------------
+    # One row per (DUPERSID, DRUGIDX, ICD10CDX). No days-supply columns —
+    # groupby-condition summaries must go through this bridge, never through
+    # patient_drug.RXDAYSUP directly (which is per-drug, not per-condition).
+    bridge = (
+        merged.dropna(subset=["ICD10CDX"])[
+            ["DUPERSID", "DRUGIDX", "ICD10CDX", "ICD10CDX_LABEL",
+             "is_chronic", "CONDIDX"]
+        ]
+        .drop_duplicates(subset=["DUPERSID", "DRUGIDX", "ICD10CDX", "CONDIDX"])
+        .reset_index(drop=True)
+    )
+    log.add(StageEntry("build_patient_drug_condition_bridge",
+                       rows_in=len(merged), rows_out=len(bridge),
+                       patients_in=merged["DUPERSID"].nunique(),
+                       patients_out=bridge["DUPERSID"].nunique(),
+                       detail="One row per (DUPERSID, DRUGIDX, ICD10CDX, "
+                              "CONDIDX). Bridge for condition-level rollups; "
+                              "carries no RXDAYSUP so cannot be summed by "
+                              "accident."))
 
     if not pstats_denominator:
         gm["total_valid_days"] = np.minimum(gm["RXDAYSUP"], 365).astype(int)
@@ -656,7 +781,11 @@ def build(
         log.decide("Flat-365 denominator: total_days_supply = 365 when RXBEGYRX <= year.")
         log.final_row_count = int(len(gm))
         log.final_patient_count = int(gm["DUPERSID"].nunique())
-        return gm, log
+        bridge = bridge.merge(
+            gm[["DUPERSID", "DRUGIDX"]].drop_duplicates(),
+            on=["DUPERSID", "DRUGIDX"], how="inner",
+        )
+        return gm, bridge, log
 
     # -- 8. Optional: drug-chronic filter ------------------------------
     if drug_chronic_only:
@@ -785,7 +914,11 @@ def build(
     log.final_row_count = int(len(gm))
     log.final_patient_count = int(gm["DUPERSID"].nunique())
 
-    return gm, log
+    bridge = bridge.merge(
+        gm[["DUPERSID", "DRUGIDX"]].drop_duplicates(),
+        on=["DUPERSID", "DRUGIDX"], how="inner",
+    )
+    return gm, bridge, log
 
 
 # ---------------------------------------------------------------------------
@@ -965,9 +1098,28 @@ def _plot_adherence_histogram(
     _save_figure(ctx, fig, filename)
 
 
+def _condition_view(
+    patient_drug: pd.DataFrame, bridge: pd.DataFrame
+) -> pd.DataFrame:
+    """Bridge-join view for condition-level rollups.
+
+    One row per (person-drug × linked chronic condition). Adherence is carried
+    from patient_drug; groupby ICD10CDX on the result gives the correct mean.
+    """
+    drop_from_pd = [c for c in [
+        "ICD10CDX", "ICD10CDX_LABEL",
+        "primary_ICD10CDX", "primary_ICD10CDX_LABEL",
+    ] if c in patient_drug.columns]
+    return bridge.merge(
+        patient_drug.drop(columns=drop_from_pd),
+        on=["DUPERSID", "DRUGIDX"], how="inner",
+    )
+
+
 def _export_summaries(
     ctx: ExportCtx,
     df: pd.DataFrame,
+    bridge: pd.DataFrame,
     *,
     tag: str,
     title_note: str = "",
@@ -975,8 +1127,9 @@ def _export_summaries(
     low_threshold: int = 10,
 ) -> None:
     note = f" ({title_note})" if title_note else ""
+    cond_view = _condition_view(df, bridge)
     by_condition = (
-        df.groupby(["ICD10CDX", "ICD10CDX_LABEL"], as_index=False)
+        cond_view.groupby(["ICD10CDX", "ICD10CDX_LABEL"], as_index=False)
         .agg(meps_adherence_ratio=("meps_adherence_ratio", "mean"))
     )
     by_tc1s1 = (
@@ -1064,7 +1217,7 @@ def run_exports(year: int, meps_dir: str | Path | None = None, write_decisions_l
     ctx.info(f"Output dir    : {tables_dir.parent}")
 
     ctx.step("Build flat-365 grouped merge (all drugs, chronic conditions)")
-    df_flat, _log_flat = build(
+    df_flat, bridge_flat, _log_flat = build(
         year, meps_dir=dir_, drug_chronic_only=False, pstats_denominator=False
     )
     ctx.info(f"{len(df_flat):,} person-drug pairs")
@@ -1091,10 +1244,10 @@ def run_exports(year: int, meps_dir: str | Path | None = None, write_decisions_l
     _save_table(ctx, by_class.tail(10).sort_values("meps_adherence_ratio"), f"{ctx.rx_p}_low.xlsx")
 
     ctx.step("Flat-365 condition/TC1S1 histograms and low-adherence tables")
-    _export_summaries(ctx, df_flat, tag="flat365")
+    _export_summaries(ctx, df_flat, bridge_flat, tag="flat365")
 
     ctx.step("Build PSTATS-based grouped merge (all drugs)")
-    df_pstats, _log_pstats = build(
+    df_pstats, bridge_pstats, _log_pstats = build(
         year, meps_dir=dir_, drug_chronic_only=False, pstats_denominator=True
     )
     ctx.info(f"{len(df_pstats):,} person-drug pairs")
@@ -1125,7 +1278,7 @@ def run_exports(year: int, meps_dir: str | Path | None = None, write_decisions_l
         _save_table(ctx, compare.reset_index(), "pstats_participation_compare.xlsx")
 
     ctx.step("Build final frame (chronic drugs + PSTATS denominator)")
-    df_final, run_log = build(year, meps_dir=dir_)
+    df_final, bridge_final, run_log = build(year, meps_dir=dir_)
     ctx.info(
         f"{len(df_final):,} person-drug pairs, "
         f"{df_final['DUPERSID'].nunique():,} patients"
@@ -1135,6 +1288,17 @@ def run_exports(year: int, meps_dir: str | Path | None = None, write_decisions_l
     pq = ctx.tables_dir / "new_grouped_merge_df_chronic_drugs.parquet"
     _stringify_age_columns(df_final).to_parquet(pq, index=False)
     ctx.info(f"saved table -> output/{ctx.year}/tables/{pq.name}  ({len(df_final):,} rows)")
+
+    # Patient-drug × condition bridge (chronic-drugs scope). Same grain as the
+    # bridge returned by build(); consumers do bridge.merge(patient_drug, on=
+    # ["DUPERSID","DRUGIDX"]) for condition-level rollups.
+    bridge_pq = ctx.tables_dir / "patient_drug_condition_bridge.parquet"
+    bridge_final.to_parquet(bridge_pq, index=False)
+    ctx.info(
+        f"saved table -> output/{ctx.year}/tables/{bridge_pq.name}  "
+        f"({len(bridge_final):,} rows)"
+    )
+    _save_table(ctx, bridge_final, "patient_drug_condition_bridge.xlsx")
     _save_table(
         ctx,
         pd.Series(
@@ -1165,7 +1329,7 @@ def run_exports(year: int, meps_dir: str | Path | None = None, write_decisions_l
     )
     _save_table(ctx, by_drug_class.head(10), f"{ctx.rx_p}_high_chronic_drugs.xlsx")
     _save_table(ctx, by_drug_class.tail(10).sort_values("meps_adherence_ratio"), f"{ctx.rx_p}_low_chronic_drugs.xlsx")
-    _export_summaries(ctx, df_final, tag="chronic_drugs", title_note="chronic drugs only")
+    _export_summaries(ctx, df_final, bridge_final, tag="chronic_drugs", title_note="chronic drugs only")
 
     ctx.step("Top / bottom patient and patient-drug adherence (PSTATS denominator)")
     valid = df_final[df_final["total_days_supply"] > 0]
@@ -1186,8 +1350,9 @@ def run_exports(year: int, meps_dir: str | Path | None = None, write_decisions_l
     _save_table(ctx, valid.nsmallest(10, "meps_adherence_ratio"), "top_10_patient_drug_low.xlsx")
 
     ctx.step("Top 20 least-adherent condition/drug combinations")
+    cond_view_final = _condition_view(df_final, bridge_final)
     top_20 = (
-        df_final.dropna(subset=["meps_adherence_ratio"])
+        cond_view_final.dropna(subset=["meps_adherence_ratio"])
         .groupby(["ICD10CDX", "ICD10CDX_LABEL", "RXNAME"], as_index=False)
         .agg(
             meps_adherence_ratio=("meps_adherence_ratio", "mean"),
