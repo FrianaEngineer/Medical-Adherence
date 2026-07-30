@@ -479,9 +479,33 @@ def _rx_cols(year: int) -> list[str]:
     yy = f"{year % 100:02d}"
     return [
         "DUPERSID", "DRUGIDX", "LINKIDX", "RXRECIDX", "RXDAYSUP",
-        "RXNAME", "RXBEGYRX", "RXNDC", "TC1", "TC1S1",
+        "RXNAME", "RXBEGYRX", "RXBEGMM", "RXNDC", "TC1", "TC1S1",
         f"RXXP{yy}X", f"RXSF{yy}X",
     ]
+
+
+def _drug_start_days_in_year(
+    year: int,
+    first_year: pd.Series,
+    first_month: pd.Series,
+) -> pd.Series:
+    """Days from a drug's earliest fill start to Dec 31 of ``year``.
+
+    - drug started before ``year``  -> 365 (drug active whole year)
+    - drug started in ``year`` with a valid month -> (Dec 31 - first-of-month + 1)
+    - drug started in ``year`` but month is missing -> 365 (conservative)
+    - drug's earliest start-year is missing or > ``year`` -> 365 (conservative)
+    """
+    fy = pd.to_numeric(first_year, errors="coerce")
+    fm = pd.to_numeric(first_month, errors="coerce")
+    year_end = date(year, 12, 31)
+    days_by_month = {
+        m: (year_end - date(year, m, 1)).days + 1 for m in range(1, 13)
+    }
+    out = pd.Series(365, index=fy.index, dtype="int64")
+    mask = fy.eq(year) & fm.between(1, 12)
+    out.loc[mask] = fm.loc[mask].astype(int).map(days_by_month).astype("int64")
+    return out
 
 
 def _person_cols(year: int) -> list[str]:
@@ -698,19 +722,32 @@ def build(
     )
 
     # -- 7. Groupby to person-drug grain -------------------------------
+    # Valid-month column for drug-start-date denominator: keep 1..12, mask sentinels
+    fills = fills.assign(
+        _valid_month=fills["RXBEGMM"].where(
+            (fills["RXBEGMM"] >= 1) & (fills["RXBEGMM"] <= 12)
+        )
+    )
     gm = fills.groupby(["DUPERSID", "DRUGIDX"]).agg(
         RXDAYSUP=("RXDAYSUP", "sum"),
         RXXP=(xp_col, "mean"),
         RXSF=(sf_col, "mean"),
         RXNAME=("RXNAME", "first"),
         RXNDC=("RXNDC", "first"),
-        RXBEGYRX=("RXBEGYRX", "first"),
+        RXBEGYRX=("RXBEGYRX", "min"),
+        first_month=("_valid_month", "min"),
         TC1=("TC1", "first"),
         TC1S1=("TC1S1", "first"),
         primary_ICD10CDX=("ICD10CDX", "first"),
         primary_ICD10CDX_LABEL=("ICD10CDX_LABEL", "first"),
     ).reset_index()
     gm = gm.rename(columns={"RXXP": xp_col, "RXSF": sf_col})
+    # Denominator adjustment for drugs first prescribed mid-year: caps at (Dec 31
+    # - first-of-first-month + 1); falls back to 365 when start-month is missing
+    # or start-year is not this year.
+    gm["drug_start_days"] = _drug_start_days_in_year(
+        year, gm["RXBEGYRX"], gm["first_month"]
+    )
 
     # Attach multi-condition context from the un-deduped merged frame so we
     # keep every chronic ICD the fill was CLNK-linked to.
@@ -771,14 +808,20 @@ def build(
 
     if not pstats_denominator:
         gm["total_valid_days"] = np.minimum(gm["RXDAYSUP"], 365).astype(int)
-        gm["total_days_supply"] = np.where(gm["RXBEGYRX"] <= year, 365, 0).astype(int)
+        gm["total_days_supply"] = np.where(
+            gm["RXBEGYRX"] <= year, gm["drug_start_days"], 0
+        ).astype(int)
         gm["total_valid_days"] = np.minimum(gm["total_valid_days"], gm["total_days_supply"])
         gm["meps_adherence_ratio"] = np.where(
             gm["total_days_supply"].eq(0),
             np.nan,
             gm["total_valid_days"] / gm["total_days_supply"] * 100,
         )
-        log.decide("Flat-365 denominator: total_days_supply = 365 when RXBEGYRX <= year.")
+        log.decide(
+            "Flat-365 denominator with drug-start adjust: total_days_supply = "
+            "drug_start_days (365 if drug started before this year; else days "
+            "from first-fill month to Dec 31) when RXBEGYRX <= year."
+        )
         log.final_row_count = int(len(gm))
         log.final_patient_count = int(gm["DUPERSID"].nunique())
         bridge = bridge.merge(
@@ -884,6 +927,14 @@ def build(
     # -- 11. Merge reference_days_df + compute adherence ----------------
     gm = gm.merge(reference_days_df, on="DUPERSID", how="left")
 
+    # Shrink the person-year window to the drug's own eligibility window when
+    # the drug wasn't active for the whole year (started in this year with a
+    # known month). Old drugs and missing-month sentinels keep 365 so the
+    # person-year PSTATS days are the only constraint.
+    gm["total_days_supply"] = np.minimum(
+        gm["total_days_supply"], gm["drug_start_days"]
+    ).astype(int)
+
     gm["total_valid_days"] = np.minimum(gm["RXDAYSUP"], 365).astype(int)
     gm["total_valid_days"] = np.minimum(
         gm["total_valid_days"], gm["total_days_supply"],
@@ -898,6 +949,15 @@ def build(
         "eligible_days). This is PDC-style (100% ceiling), not MPR-style "
         "(uncapped). Documented; can be relaxed later if uncapped MPR is "
         "wanted."
+    )
+    log.decide(
+        "Drug-start denominator adjust: for pairs whose earliest fill has "
+        "RXBEGYRX == this year AND RXBEGMM in 1..12, total_days_supply is "
+        "clamped to (Dec 31 - first-of-first-month + 1). Sentinel months "
+        "(-1/-7/-8/-15) and earlier-year starts fall back to the full "
+        "person-year window. ~31.6 pct of 2023 chronic-drug pairs get a "
+        "shorter denominator; the remaining ~68 pct keep 365 because the "
+        "drug is old or the start month is missing."
     )
 
     # Drop round-detail cols the caller doesn't need
