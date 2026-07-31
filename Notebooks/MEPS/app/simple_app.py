@@ -32,6 +32,8 @@ from clean_meps import (
     run_exports,
     write_log,
 )
+import gates as _gates_mod
+from gates import load_chronic_icd_lookup, run_all_gates
 
 # Cache filenames (match clean_meps.ALL_YEARS_*); kept local so Streamlit
 # hot-reload does not break if it briefly holds a stale clean_meps module.
@@ -620,6 +622,65 @@ def top_bottom_bar_figures(
     return top_fig, bottom_fig
 
 
+def condition_compare_figure(
+    df: pd.DataFrame,
+    *,
+    threshold: int,
+) -> go.Figure:
+    """Horizontal bar chart of mean adherence for user-selected conditions.
+
+    Each bar is labeled with the condition name (y-axis) and mean adherence
+    (text on the bar) so several conditions can be compared on one graph.
+    """
+    plot_df = (
+        df.dropna(subset=["mean adherence"])
+        .sort_values("mean adherence", ascending=True)
+        .copy()
+    )
+    plot_df["_label"] = plot_df["condition name"].astype(str)
+    plot_df["_text"] = plot_df["mean adherence"].map(lambda v: f"{v:.1f}%")
+    plot_df["_hover_n"] = plot_df["n patients"] if "n patients" in plot_df.columns else 0
+
+    fig = px.bar(
+        plot_df,
+        x="mean adherence",
+        y="_label",
+        orientation="h",
+        color="_label",
+        text="_text",
+        labels={"mean adherence": "Mean adherence (%)", "_label": ""},
+        title="Mean adherence by selected condition",
+    )
+    fig.update_traces(
+        textposition="outside",
+        cliponaxis=False,
+        hovertemplate=(
+            "<b>%{y}</b><br>"
+            "Mean adherence: %{x:.1f}%<br>"
+            "Patients: %{customdata[0]:,}<extra></extra>"
+        ),
+        customdata=plot_df[["_hover_n"]].to_numpy(),
+        showlegend=True,
+    )
+    fig.add_vline(
+        x=threshold,
+        line_dash="dot",
+        line_color="red",
+        annotation_text=f"{threshold}%",
+        annotation_position="top",
+    )
+    n = len(plot_df)
+    fig.update_layout(
+        height=max(380, 48 * n + 140),
+        margin=dict(t=70, l=10, r=90, b=40),
+        xaxis=dict(range=[0, 115], title="Mean adherence (%)"),
+        yaxis=dict(title=""),
+        legend_title_text="Condition",
+        legend=dict(orientation="v", yanchor="top", y=1, xanchor="left", x=1.02),
+    )
+    return fig
+
+
 @st.cache_data(show_spinner=False)
 def year_findings(year: int, threshold: int) -> dict | None:
     """Summarize chronic-drug + PSTATS exports for the Home tab."""
@@ -945,8 +1006,8 @@ with st.sidebar:
 # ---------------------------------------------------------------------------
 
 
-tab_home, tab_analysis, tab_method, tab_viz = st.tabs(
-    ["Home", "Analysis", "Methodology", "Visualization"]
+tab_home, tab_analysis, tab_method, tab_viz, tab_gates = st.tabs(
+    ["Home", "Analysis", "Methodology", "Visualization", "Gates"]
 )
 
 
@@ -1180,111 +1241,263 @@ with tab_viz:
     if frame is None:
         st.warning("Data not found for this selection. Use Refresh year data in the sidebar.")
     else:
-        n_before = len(frame)
-        frame = apply_filters(
-            frame,
-            year,
-            genders=genders,
-            age_range=age_range,
-            conditions=conditions,
-            incomes=incomes,
-            insurance=insurance,
-        )
-        st.caption(
-            f"Charts update with sidebar filters · "
-            f"rows {n_before:,} → {len(frame):,} · threshold {threshold}%"
-        )
+        viz_dist, viz_compare = st.tabs(["Distributions", "Compare conditions"])
 
-        if frame.empty:
-            st.warning("No rows match the current filters.")
-        else:
-            level = st.radio(
-                "Chart level",
-                [
-                    "Person–drug",
-                    "Condition",
-                    "Drug × condition",
-                    "Drug category (TC1 / TC1S1)",
-                ],
-                horizontal=True,
-                key="viz_level",
+        with viz_dist:
+            n_before = len(frame)
+            dist_frame = apply_filters(
+                frame,
+                year,
+                genders=genders,
+                age_range=age_range,
+                conditions=conditions,
+                incomes=incomes,
+                insurance=insurance,
             )
-
-            if level == "Person–drug":
-                values = frame["meps_adherence_ratio"].dropna()
-                ylabel = "Number of person–drug pairs"
-                xlabel = "Adherence ratio (%)"
-                title = "Distribution of person–drug adherence"
-                rank_df = None
-                label_col = None
-            elif level == "Condition":
-                by = condition_level_adherence(frame)
-                values = by["mean adherence"]
-                ylabel = "Number of conditions"
-                xlabel = "Average adherence by condition (%)"
-                title = "Distribution of condition-level average adherence"
-                rank_df = by
-                label_col = "condition name"
-            elif level == "Drug × condition":
-                by = drug_level_adherence(frame)
-                values = by["mean adherence"]
-                ylabel = "Number of drug × condition pairs"
-                xlabel = "Average adherence by drug × condition (%)"
-                title = "Distribution of drug × condition average adherence"
-                rank_df = by.assign(
-                    label=by["drug name"].astype(str) + " · " + by["condition name"].astype(str)
-                )
-                label_col = "label"
-            else:
-                by = drug_category_adherence(frame)
-                values = by["mean adherence"]
-                ylabel = "Number of drug categories"
-                xlabel = "Average adherence by drug category (%)"
-                title = "Distribution of drug-category average adherence (TC1, else TC1S1)"
-                rank_df = by
-                label_col = "drug category"
-                n_tc1 = int(by["drug category"].astype(str).str.startswith("TC1-").sum()) if len(by) else 0
-                n_tc1s1 = int(by["drug category"].astype(str).str.startswith("TC1S1-").sum()) if len(by) else 0
-                st.caption(
-                    f"Category rule: use **TC1** when present; otherwise **TC1S1**. "
-                    f"This selection has {n_tc1:,} TC1 groups and {n_tc1s1:,} TC1S1 fallback groups."
-                )
-
-            fig = adherence_histogram_figure(
-                values,
-                threshold=threshold,
-                title=title,
-                xlabel=xlabel,
-                ylabel=ylabel,
-            )
-            st.plotly_chart(fig, use_container_width=True)
-
-            below = int((values < threshold).sum())
             st.caption(
-                f"{len(values):,} groups · mean {values.mean():.1f}% · "
-                f"below {threshold}%: {below:,} · at/above: {len(values) - below:,}"
+                f"Charts update with sidebar filters · "
+                f"rows {n_before:,} → {len(dist_frame):,} · threshold {threshold}%"
             )
 
-            if rank_df is not None and label_col is not None and len(rank_df):
-                st.subheader("Top / bottom by mean adherence")
-                min_n = 10
-                if "n patients" in rank_df.columns:
-                    rank_df = rank_df[rank_df["n patients"] >= min_n].copy()
-                st.caption(
-                    f"{title.replace('Distribution of ', '')} "
-                    f"(threshold {threshold}% · only groups with ≥ {min_n} patients)"
+            if dist_frame.empty:
+                st.warning("No rows match the current filters.")
+            else:
+                level = st.radio(
+                    "Chart level",
+                    [
+                        "Person–drug",
+                        "Condition",
+                        "Drug × condition",
+                        "Drug category (TC1 / TC1S1)",
+                    ],
+                    horizontal=True,
+                    key="viz_level",
                 )
-                if rank_df.empty:
-                    st.info(f"No groups have ≥ {min_n} patients under the current filters.")
-                else:
-                    rank_figs = top_bottom_bar_figures(
-                        rank_df,
-                        label_col=label_col,
-                        value_col="mean adherence",
-                        threshold=threshold,
-                        title=title.replace("Distribution of ", ""),
+
+                if level == "Person–drug":
+                    values = dist_frame["meps_adherence_ratio"].dropna()
+                    ylabel = "Number of person–drug pairs"
+                    xlabel = "Adherence ratio (%)"
+                    title = "Distribution of person–drug adherence"
+                    rank_df = None
+                    label_col = None
+                elif level == "Condition":
+                    by = condition_level_adherence(dist_frame, bridge)
+                    values = by["mean adherence"]
+                    ylabel = "Number of conditions"
+                    xlabel = "Average adherence by condition (%)"
+                    title = "Distribution of condition-level average adherence"
+                    rank_df = by
+                    label_col = "condition name"
+                elif level == "Drug × condition":
+                    by = drug_level_adherence(dist_frame, bridge)
+                    values = by["mean adherence"]
+                    ylabel = "Number of drug × condition pairs"
+                    xlabel = "Average adherence by drug × condition (%)"
+                    title = "Distribution of drug × condition average adherence"
+                    rank_df = by.assign(
+                        label=by["drug name"].astype(str)
+                        + " · "
+                        + by["condition name"].astype(str)
                     )
-                    if rank_figs is not None:
-                        top_fig, bottom_fig = rank_figs
-                        st.plotly_chart(top_fig, use_container_width=True)
-                        st.plotly_chart(bottom_fig, use_container_width=True)
+                    label_col = "label"
+                else:
+                    by = drug_category_adherence(dist_frame)
+                    values = by["mean adherence"]
+                    ylabel = "Number of drug categories"
+                    xlabel = "Average adherence by drug category (%)"
+                    title = "Distribution of drug-category average adherence (TC1, else TC1S1)"
+                    rank_df = by
+                    label_col = "drug category"
+                    n_tc1 = (
+                        int(by["drug category"].astype(str).str.startswith("TC1-").sum())
+                        if len(by)
+                        else 0
+                    )
+                    n_tc1s1 = (
+                        int(by["drug category"].astype(str).str.startswith("TC1S1-").sum())
+                        if len(by)
+                        else 0
+                    )
+                    st.caption(
+                        f"Category rule: use **TC1** when present; otherwise **TC1S1**. "
+                        f"This selection has {n_tc1:,} TC1 groups and "
+                        f"{n_tc1s1:,} TC1S1 fallback groups."
+                    )
+
+                fig = adherence_histogram_figure(
+                    values,
+                    threshold=threshold,
+                    title=title,
+                    xlabel=xlabel,
+                    ylabel=ylabel,
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+                below = int((values < threshold).sum())
+                st.caption(
+                    f"{len(values):,} groups · mean {values.mean():.1f}% · "
+                    f"below {threshold}%: {below:,} · at/above: {len(values) - below:,}"
+                )
+
+                if rank_df is not None and label_col is not None and len(rank_df):
+                    st.subheader("Top / bottom by mean adherence")
+                    min_n = 10
+                    if "n patients" in rank_df.columns:
+                        rank_df = rank_df[rank_df["n patients"] >= min_n].copy()
+                    st.caption(
+                        f"{title.replace('Distribution of ', '')} "
+                        f"(threshold {threshold}% · only groups with ≥ {min_n} patients)"
+                    )
+                    if rank_df.empty:
+                        st.info(
+                            f"No groups have ≥ {min_n} patients under the current filters."
+                        )
+                    else:
+                        rank_figs = top_bottom_bar_figures(
+                            rank_df,
+                            label_col=label_col,
+                            value_col="mean adherence",
+                            threshold=threshold,
+                            title=title.replace("Distribution of ", ""),
+                        )
+                        if rank_figs is not None:
+                            top_fig, bottom_fig = rank_figs
+                            st.plotly_chart(top_fig, use_container_width=True)
+                            st.plotly_chart(bottom_fig, use_container_width=True)
+
+        with viz_compare:
+            # Demographic filters only — ignore sidebar Condition so any set can be compared.
+            compare_base = apply_filters(
+                frame,
+                year,
+                genders=genders,
+                age_range=age_range,
+                conditions=[],
+                incomes=incomes,
+                insurance=insurance,
+            )
+            st.caption(
+                "Pick any conditions to plot side-by-side. "
+                "Gender / age / income / insurance sidebar filters still apply; "
+                f"the sidebar Condition filter does not. Threshold {threshold}%."
+            )
+            if compare_base.empty:
+                st.warning("No rows match the current demographic filters.")
+            else:
+                cond_by = condition_level_adherence(compare_base, bridge)
+                if cond_by.empty or "condition name" not in cond_by.columns:
+                    st.warning("No condition-level adherence available for this selection.")
+                else:
+                    available = (
+                        cond_by.sort_values("n patients", ascending=False)["condition name"]
+                        .astype(str)
+                        .tolist()
+                    )
+                    picked = st.multiselect(
+                        "Conditions to compare",
+                        options=available,
+                        default=[],
+                        key="viz_compare_conditions",
+                        help="Select as many conditions as you want (e.g. asthma, depression, ADHD).",
+                    )
+                    if not picked:
+                        st.info("Select one or more conditions above to see them on one graph.")
+                    else:
+                        compare_df = (
+                            cond_by[cond_by["condition name"].astype(str).isin(picked)]
+                            .sort_values("mean adherence", ascending=False)
+                            .reset_index(drop=True)
+                        )
+                        compare_fig = condition_compare_figure(
+                            compare_df,
+                            threshold=threshold,
+                        )
+                        st.plotly_chart(compare_fig, use_container_width=True)
+
+                        display = compare_df[
+                            [c for c in ("condition name", "mean adherence", "n patients") if c in compare_df.columns]
+                        ].copy()
+                        if "mean adherence" in display.columns:
+                            display["mean adherence"] = display["mean adherence"].map(
+                                lambda v: f"{v:.1f}%"
+                            )
+                        st.dataframe(display, use_container_width=True, hide_index=True)
+                        st.caption(
+                            f"{len(compare_df):,} conditions · "
+                            f"overall mean of selected means "
+                            f"{compare_df['mean adherence'].mean():.1f}%"
+                        )
+
+
+# ---- Gates ----------------------------------------------------------------
+
+with tab_gates:
+    # Always reload so edits to gates.py show up without a full server restart.
+    import importlib
+
+    importlib.reload(_gates_mod)
+    load_chronic_icd_lookup = _gates_mod.load_chronic_icd_lookup
+    run_all_gates = _gates_mod.run_all_gates
+
+    st.header(f"Data quality gates · {year_label}")
+    st.write(
+        "These checks make sure the cleaned MEPS table is trustworthy before "
+        "you trust the charts or train a model. Each gate is written in plain "
+        "language — green means the check passed, red means something needs attention."
+    )
+
+    gate_frame = frame_preview
+    if gate_frame is None:
+        st.warning(
+            "No analysis data is loaded for this selection. "
+            "Use Refresh year data or Rebuild analysis frame in the sidebar."
+        )
+    else:
+        try:
+            meps_dir = resolve_meps_dir()
+        except Exception:
+            meps_dir = None
+        chronic_lookup = load_chronic_icd_lookup(meps_dir)
+
+        with st.spinner("Running quality gates…"):
+            results = run_all_gates(gate_frame, chronic_lookup=chronic_lookup)
+
+        n_pass = sum(1 for r in results if r.passed)
+        n_fail = len(results) - n_pass
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Checks run", f"{len(results)}")
+        m2.metric("Passing", f"{n_pass}")
+        m3.metric("Failing", f"{n_fail}")
+
+        if chronic_lookup is None:
+            st.info(
+                "Could not find is_chronic.xlsx — the chronic-condition gate "
+                "will rely only on the is_chronic column already in the table."
+            )
+
+        st.caption(
+            f"Checked {len(gate_frame):,} person–drug rows for {year_label} "
+            "(sidebar filters are not applied here — gates use the full loaded table)."
+        )
+        st.markdown(
+            """
+**What each gate checks**
+1. **Days covered ≤ eligible days** — `total_valid_days` ≤ `total_days_supply` (the adherence formula)
+2. **One-hot is 0/1** — category flags (ICD, insurance, income, …) are proper one-hots
+3. **No negative supply / disease codes** — `RXDAYSUP` must be **> 0**; `ICD10CDX` must be real (not negative); technical details show both ranges
+4. **Conditions are chronic** — every unique ICD has `is_chronic == 1` in `is_chronic.xlsx`
+5. **Adherence in 0–100%** — `meps_adherence_ratio`
+6. **No negative ages** — `AGE` / `AGEyyX` (`unknown` is OK)
+            """
+        )
+
+        for result in results:
+            icon = "✅" if result.passed else "❌"
+            status = "PASS" if result.passed else "FAIL"
+            with st.container(border=True):
+                st.markdown(f"### {icon} {result.title}")
+                st.markdown(f"**{status}** — {result.summary}")
+                with st.expander("Technical details"):
+                    st.code(result.detail or "(no technical details)")
+                    st.caption(f"Violations counted: {result.n_violations:,}")

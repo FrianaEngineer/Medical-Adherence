@@ -5,3 +5,4 @@ plotly>=5.18.0
 openpyxl>=3.1.0
 python-calamine>=0.2.0
 matplotlib>=3.7.0
+pytest>=7.0.0
