@@ -1016,45 +1016,85 @@ tab_home, tab_analysis, tab_method, tab_viz, tab_gates = st.tabs(
 with tab_home:
     st.title("MEPS Medical Adherence")
     st.write(
-        "A multi-year look at how consistently people fill chronic medications, "
-        "using the Agency for Healthcare Research and Quality (AHRQ) "
-        "Medical Expenditure Panel Survey (MEPS) for 2020–2023."
+        "**The question in one sentence:** are people taking their chronic "
+        "medications regularly, and who isn't?"
     )
 
-    st.subheader("What is medical adherence?")
+    st.subheader("What we did")
     st.markdown(
         """
-**Medication adherence** is the extent to which a person takes medication as prescribed —
-the right drug, dose, and schedule over time. In claims and survey research it is usually
-approximated from refill patterns (days of supply on hand) rather than observed pill-taking.
-Poor adherence is linked to worse disease control, preventable hospitalizations, and higher
-costs, especially for chronic conditions that require continuous therapy.
+For each person and each chronic drug they filled in a given year (2020–2023),
+we estimate how much of the year they had medication on hand — then compare
+that against how long they were actually eligible to fill prescriptions.
+The data comes from the **Medical Expenditure Panel Survey (MEPS)**, an
+annual national health survey run by AHRQ.
         """
     )
 
-    st.subheader("What this project is about")
+    st.subheader("How we measure adherence")
     st.markdown(
         """
-In this project, I use nationally representative data from the Agency for Healthcare Research
-and Quality (AHRQ) Medical Expenditure Panel Survey (MEPS) for 2020–2023 to study how
-consistently people maintain medication coverage for chronic conditions. Because MEPS is a
-survey rather than a pharmacy transaction log, it does not provide exact refill dates or a
-ready-made adherence measure, so I created the measure through feature engineering. I linked
-prescription records to chronic conditions, excluded medications used for acute conditions or
-temporary flare-ups, removed records with missing or unusable values, and combined multiple
-prescription, days-supply, and survey-participation columns to estimate each person’s total
-medication coverage. I also used survey response information (PSTATS — person status /
-participation codes) to determine whether a person participated for the full year or had a
-shorter observation period, allowing me to calculate an appropriate number of eligible days.
-For each person–drug pair, I calculated a Proportion of Days Covered (PDC)–style adherence
-ratio by dividing the estimated total days supplied by the eligible observation days and
-capping the result at 100%. I use a 60% threshold as an exploratory indicator of possible
-non-adherence rather than as a clinical standard. In addition to medication coverage, I examine
-factors that may influence adherence, including economic status, insurance coverage, medication
-costs, age, sex, chronic-condition burden, and other patient characteristics. The goal of the
-project is to identify conditions and drug groups with lower adherence, understand the factors
-associated with those patterns, support future predictive modeling, and produce transparent,
-reproducible, and year-comparable results.
+For every (person, drug) pair we compute a **PDC-style ratio**:
+
+```
+adherence % = min(days supplied, 365, eligible days) ÷ eligible days × 100
+```
+
+- **days supplied** = sum of RXDAYSUP across that person's fills of that drug in the year (deduplicated so one fill isn't counted twice — see below)
+- **eligible days** = derived from MEPS PSTATS participation codes:
+  full-year respondents get **365**; people who died mid-year, dropped out,
+  or joined late get a **shortened window** based on their round dates
+- If the drug was **first prescribed mid-year**, the denominator is further
+  shortened to the days from the first-fill month through Dec 31
+
+Capped at 100% (PDC-style, not uncapped MPR). We treat **≥ 60%** as an
+exploratory adherent-vs-not threshold — that is a **choice for this analysis**,
+not a clinical standard.
+        """
+    )
+
+    st.subheader("What could go wrong (and what we did about it)")
+    st.markdown(
+        """
+Questions a reviewer would ask, and how the pipeline answers them:
+
+- **"Is your adherence number even right?"** &nbsp; Six automated data-quality
+  gates run on every export — numerator ≤ denominator, ratio ∈ [0, 100],
+  no negative days, every condition confirmed chronic, age valid, one-hot
+  encoding valid. See the **Gates** tab.
+- **"What if a single fill treats multiple chronic conditions?"** &nbsp;
+  A prescription linked to both diabetes AND hypertension used to appear
+  twice in the merge, inflating days supplied by ~4.8%. Fixed by
+  **deduplicating on (person, drug, fill) before summing**, with a separate
+  bridge table for condition-level rollups. Locked in with a regression test.
+- **"Are you leaking the label into the features?"** &nbsp; The modeling
+  notebook explicitly drops `is_adherent`, `meps_adherence_ratio`,
+  `total_valid_days`, `total_days_supply`, `drug_start_days`, `n_drugs`,
+  `n_conditions` before training.
+- **"Are your four years drifting apart?"** &nbsp; One shared pipeline
+  (`app/clean_meps.py`) processes 2020–2023. Only file names differ per year.
+- **"Where's the evidence you tested this?"** &nbsp; **47 unit tests**
+  (31 gates + 16 pipeline stages). Run `pytest app/tests/ -v` from the repo root.
+- **"What's the modeling story?"** &nbsp; Three XGBoost models in
+  `2023_clean.ipynb` build on each other — A (patient context only) →
+  B (+ drug class) → C (+ socioeconomic variables from the literature).
+  Same CV strategy and hyperparameter grid across all three; the only
+  variable is the feature set. `HalvingGridSearchCV` on the full grid.
+- **"Is 60% clinically defensible?"** &nbsp; No — real PDC studies typically
+  use 80%. 60% here is an exploratory bar for a survey (not claims) dataset;
+  the threshold is a **sidebar slider** so the reader can retune it.
+        """
+    )
+
+    st.subheader("How to read this app")
+    st.markdown(
+        """
+- **Home** *(you are here)* — the story + year-by-year summary numbers
+- **Analysis** — filter by year, sex, age, income, insurance, condition;
+  drug-level and condition-level adherence tables
+- **Methodology** — deeper technical notes on the pipeline
+- **Visualization** — distribution plots + cross-condition comparisons
+- **Gates** — the automated data-quality checks and what they enforce
         """
     )
 
