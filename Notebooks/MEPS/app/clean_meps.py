@@ -536,6 +536,123 @@ COND_COLS = ["DUPERSID", "CONDIDX", "ICD10CDX", "AGEDIAG"]
 
 
 # ---------------------------------------------------------------------------
+# Core pipeline stages (pure functions, unit-testable without MEPS files)
+# ---------------------------------------------------------------------------
+
+def link_rx_to_conditions(
+    rx: pd.DataFrame,
+    clnk: pd.DataFrame,
+    h249_chronic: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """CLNK-link Rx fills to chronic conditions and produce the safe frames.
+
+    Returns
+    -------
+    merged
+        rx x chronic-condition rows, one row per (fill, linked chronic ICD).
+        A fill linked to N chronic ICDs appears N times here. Use for
+        condition-context aggregations only, never sum RXDAYSUP on this frame.
+    fills
+        Deduplicated on (DUPERSID, DRUGIDX, RXRECIDX) so each physical fill
+        appears once. RXDAYSUP is safe to sum on this frame.
+    bridge
+        One row per (DUPERSID, DRUGIDX, ICD10CDX, CONDIDX). Carries no
+        RXDAYSUP by design so it cannot be accidentally summed. Use for
+        condition-level rollups.
+    """
+    cond_df = clnk.merge(
+        h249_chronic.drop(columns=["DUPERSID"]),
+        on="CONDIDX", how="left",
+    )
+    cond_df = cond_df[cond_df["EVENTYPE"] == 8]
+
+    keep_cond_cols = ["DUPERSID", "CONDIDX", "EVNTIDX", "ICD10CDX",
+                      "ICD10CDX_LABEL", "is_chronic"]
+    merged = rx.merge(
+        cond_df[keep_cond_cols],
+        left_on=["DUPERSID", "LINKIDX"], right_on=["DUPERSID", "EVNTIDX"],
+        how="left",
+    )
+    merged = merged.dropna(subset=["is_chronic"])
+
+    fills = merged.drop_duplicates(subset=["DUPERSID", "DRUGIDX", "RXRECIDX"])
+
+    bridge = (
+        merged.dropna(subset=["ICD10CDX"])[
+            ["DUPERSID", "DRUGIDX", "ICD10CDX", "ICD10CDX_LABEL",
+             "is_chronic", "CONDIDX"]
+        ]
+        .drop_duplicates(subset=["DUPERSID", "DRUGIDX", "ICD10CDX", "CONDIDX"])
+        .reset_index(drop=True)
+    )
+    return merged, fills, bridge
+
+
+def compute_reference_days(person: pd.DataFrame, year: int) -> pd.DataFrame:
+    """PSTATS + BEGRF/ENDRF -> per-person eligible days in ``year``.
+
+    Wraps ``_compute_reference_coverage`` over one person-year frame. Returns
+    one row per DUPERSID with:
+    ``total_days_supply``, ``ref_start_{year}``, ``ref_end_{year}``,
+    ``participation_type``, ``coverage_notes``, ``r53_nonresponse``.
+    """
+    person_demo = person.drop_duplicates("DUPERSID").copy()
+    parts = person_demo.apply(
+        lambda row: _compute_reference_coverage(row, year),
+        axis=1, result_type="expand",
+    )
+    person_demo["total_days_supply"] = parts[0]
+    person_demo[f"ref_start_{year}"] = parts[1]
+    person_demo[f"ref_end_{year}"] = parts[2]
+    person_demo["coverage_notes"] = parts[3]
+    person_demo["r53_nonresponse"] = person_demo["PSTATS53"] == -1
+
+    person_demo["participation_type"] = np.select(
+        [
+            person_demo["coverage_notes"].eq("full_year_all_rounds_11"),
+            person_demo["coverage_notes"].eq("not_in_any_round"),
+            person_demo["coverage_notes"].str.contains("death", na=False),
+            person_demo["coverage_notes"].str.contains("stop", na=False),
+            person_demo["coverage_notes"].str.contains("no_coverage", na=False),
+            person_demo["total_days_supply"].eq(0),
+        ],
+        ["full_year", "not_in_any_round", "ended_early_death",
+         "ended_early_left_ru", "partial_no_survey", "no_coverage"],
+        default="partial_year",
+    )
+
+    return person_demo[
+        ["DUPERSID", f"ref_start_{year}", f"ref_end_{year}",
+         "total_days_supply", "participation_type", "coverage_notes",
+         "r53_nonresponse"]
+    ]
+
+
+def apply_adherence_math(
+    df: pd.DataFrame,
+    denom_col: str = "total_days_supply",
+) -> pd.DataFrame:
+    """Add ``total_valid_days`` and ``meps_adherence_ratio`` in place-safe way.
+
+    Formula (PDC-style, 100% ceiling):
+        total_valid_days = min(RXDAYSUP, 365, denom_col)
+        ratio            = 100 * total_valid_days / denom_col  (NaN if denom == 0)
+
+    Requires ``RXDAYSUP`` and ``denom_col`` on ``df``. Returns the same frame
+    with the two columns added/overwritten.
+    """
+    out = df.copy()
+    out["total_valid_days"] = np.minimum(out["RXDAYSUP"], 365).astype(int)
+    out["total_valid_days"] = np.minimum(out["total_valid_days"], out[denom_col])
+    out["meps_adherence_ratio"] = np.where(
+        out[denom_col].eq(0),
+        np.nan,
+        out["total_valid_days"] / out[denom_col] * 100,
+    )
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -655,54 +772,19 @@ def build(
                        detail="Keeps only conditions whose ICD-10 3-digit code "
                               "is in the chronic allowlist."))
 
-    # -- 5. CLNK: link Rx events → conditions (EVENTYPE == 8) -----------
+    # -- 5-6-6b-7b. CLNK link + dedup fills + bridge (extracted) --------
+    # See ``link_rx_to_conditions`` for the join / dedup / bridge invariants.
     clnk = pd.read_excel(dir_ / files["clnk"], engine="calamine")
-    cond_df = clnk.merge(
-        h249_chronic.drop(columns=["DUPERSID"]),  # keep clnk's DUPERSID
-        on="CONDIDX", how="left",
-    )
-    before, before_p = len(cond_df), cond_df["DUPERSID"].nunique()
-    cond_df = cond_df[cond_df["EVENTYPE"] == 8]
-    log.add(StageEntry("filter_CLNK_EVENTYPE_8",
-                       rows_in=before, rows_out=len(cond_df),
-                       patients_in=before_p,
-                       patients_out=cond_df["DUPERSID"].nunique(),
-                       detail="Keeps only prescription-medicine event links "
-                              "(EVENTYPE 1=office, 2=OP, 3=ER, 4=IP, 7=HH, "
-                              "8=PMED). Only 8 is relevant for Rx adherence."))
-
-    # -- 6. Join Rx rows to CLNK-conditions, drop rows w/o chronic cond -
-    keep_cond_cols = ["DUPERSID", "CONDIDX", "EVNTIDX", "ICD10CDX",
-                      "ICD10CDX_LABEL", "is_chronic"]
-    merged = rx.merge(
-        cond_df[keep_cond_cols],
-        left_on=["DUPERSID", "LINKIDX"], right_on=["DUPERSID", "EVNTIDX"],
-        how="left",
-    )
-    before, before_p = len(merged), merged["DUPERSID"].nunique()
-    merged = merged.dropna(subset=["is_chronic"])
-    log.add(StageEntry("merge_rx_to_chronic_condition",
-                       rows_in=before, rows_out=len(merged),
-                       patients_in=before_p,
+    rx_in, rx_p = len(rx), rx["DUPERSID"].nunique()
+    merged, fills, bridge = link_rx_to_conditions(rx, clnk, h249_chronic)
+    log.add(StageEntry("link_rx_to_chronic_conditions",
+                       rows_in=rx_in, rows_out=len(merged),
+                       patients_in=rx_p,
                        patients_out=merged["DUPERSID"].nunique(),
-                       detail="LEFT JOIN on (DUPERSID, LINKIDX=EVNTIDX); drops "
-                              "Rx rows whose CLNK link isn't to a chronic "
-                              "condition. Rx rows linked to N chronic "
-                              "conditions expand to N rows here; that "
-                              "expansion is unwound in the next step so "
-                              "RXDAYSUP is not summed N times."))
-    log.decide(
-        "Rx→condition join uses (DUPERSID, LINKIDX=EVNTIDX) — never DUPERSID "
-        "alone (Cartesian explosion) and never LINKIDX alone (round-scoped). "
-        "Documented in MEPS_SCHEMA_NOTES."
-    )
-
-    # -- 6b. Dedup fills before summing days ---------------------------
-    # RXRECIDX is unique per fill in the raw rx frame. After the CLNK-condition
-    # merge above, a fill linked to N chronic conditions appears N times. Sum
-    # RXDAYSUP on the deduplicated (person, drug, fill) rows so each fill's
-    # days count once. Condition context is preserved via the bridge below.
-    fills = merged.drop_duplicates(subset=["DUPERSID", "DRUGIDX", "RXRECIDX"])
+                       detail="CLNK EVENTYPE=8, LEFT JOIN rx on "
+                              "(DUPERSID, LINKIDX=EVNTIDX), drop non-chronic. "
+                              "Multi-condition fills expand to N rows here; "
+                              "unwound in the fills dedup below."))
     log.add(StageEntry("dedup_fills_before_summing_days",
                        rows_in=len(merged), rows_out=len(fills),
                        patients_in=merged["DUPERSID"].nunique(),
@@ -711,6 +793,11 @@ def build(
                               "Removes CLNK multi-condition duplication so "
                               "RXDAYSUP is not double-counted when a fill "
                               "links to more than one chronic ICD."))
+    log.decide(
+        "Rx→condition join uses (DUPERSID, LINKIDX=EVNTIDX) — never DUPERSID "
+        "alone (Cartesian explosion) and never LINKIDX alone (round-scoped). "
+        "Documented in MEPS_SCHEMA_NOTES."
+    )
     log.decide(
         "CLNK multi-condition duplication fix: RXDAYSUP is summed on "
         "deduplicated fills (one row per RXRECIDX per person-drug), not on "
@@ -785,18 +872,7 @@ def build(
                               "n_chronic_conditions + chronic_conditions list "
                               "cover the full linkage set."))
 
-    # -- 7b. Patient-drug × condition bridge ---------------------------
-    # One row per (DUPERSID, DRUGIDX, ICD10CDX). No days-supply columns —
-    # groupby-condition summaries must go through this bridge, never through
-    # patient_drug.RXDAYSUP directly (which is per-drug, not per-condition).
-    bridge = (
-        merged.dropna(subset=["ICD10CDX"])[
-            ["DUPERSID", "DRUGIDX", "ICD10CDX", "ICD10CDX_LABEL",
-             "is_chronic", "CONDIDX"]
-        ]
-        .drop_duplicates(subset=["DUPERSID", "DRUGIDX", "ICD10CDX", "CONDIDX"])
-        .reset_index(drop=True)
-    )
+    # -- 7b. Patient-drug × condition bridge (built by link_rx_to_conditions)
     log.add(StageEntry("build_patient_drug_condition_bridge",
                        rows_in=len(merged), rows_out=len(bridge),
                        patients_in=merged["DUPERSID"].nunique(),
@@ -807,16 +883,10 @@ def build(
                               "accident."))
 
     if not pstats_denominator:
-        gm["total_valid_days"] = np.minimum(gm["RXDAYSUP"], 365).astype(int)
         gm["total_days_supply"] = np.where(
             gm["RXBEGYRX"] <= year, gm["drug_start_days"], 0
         ).astype(int)
-        gm["total_valid_days"] = np.minimum(gm["total_valid_days"], gm["total_days_supply"])
-        gm["meps_adherence_ratio"] = np.where(
-            gm["total_days_supply"].eq(0),
-            np.nan,
-            gm["total_valid_days"] / gm["total_days_supply"] * 100,
-        )
+        gm = apply_adherence_math(gm, denom_col="total_days_supply")
         log.decide(
             "Flat-365 denominator with drug-start adjust: total_days_supply = "
             "drug_start_days (365 if drug started before this year; else days "
@@ -878,37 +948,8 @@ def build(
                               "validated many_to_one to catch dupe person rows; "
                               f"AGE{yy}X -1 → 'unknown'."))
 
-    # -- 10. PSTATS → reference_days_df --------------------------------
-    person_demo = person.drop_duplicates("DUPERSID").copy()
-    parts = person_demo.apply(
-        lambda row: _compute_reference_coverage(row, year),
-        axis=1, result_type="expand",
-    )
-    person_demo["total_days_supply"] = parts[0]
-    person_demo[f"ref_start_{year}"] = parts[1]
-    person_demo[f"ref_end_{year}"] = parts[2]
-    person_demo["coverage_notes"] = parts[3]
-    person_demo["r53_nonresponse"] = person_demo["PSTATS53"] == -1
-
-    person_demo["participation_type"] = np.select(
-        [
-            person_demo["coverage_notes"].eq("full_year_all_rounds_11"),
-            person_demo["coverage_notes"].eq("not_in_any_round"),
-            person_demo["coverage_notes"].str.contains("death", na=False),
-            person_demo["coverage_notes"].str.contains("stop", na=False),
-            person_demo["coverage_notes"].str.contains("no_coverage", na=False),
-            person_demo["total_days_supply"].eq(0),
-        ],
-        ["full_year", "not_in_any_round", "ended_early_death",
-         "ended_early_left_ru", "partial_no_survey", "no_coverage"],
-        default="partial_year",
-    )
-
-    reference_days_df = person_demo[
-        ["DUPERSID", f"ref_start_{year}", f"ref_end_{year}",
-         "total_days_supply", "participation_type", "coverage_notes",
-         "r53_nonresponse"]
-    ]
+    # -- 10. PSTATS → reference_days_df (extracted) --------------------
+    reference_days_df = compute_reference_days(person, year)
     log.add(StageEntry("compute_reference_days",
                        rows_in=len(person),
                        rows_out=len(reference_days_df),
@@ -935,15 +976,7 @@ def build(
         gm["total_days_supply"], gm["drug_start_days"]
     ).astype(int)
 
-    gm["total_valid_days"] = np.minimum(gm["RXDAYSUP"], 365).astype(int)
-    gm["total_valid_days"] = np.minimum(
-        gm["total_valid_days"], gm["total_days_supply"],
-    )
-    gm["meps_adherence_ratio"] = np.where(
-        gm["total_days_supply"].eq(0),
-        np.nan,
-        gm["total_valid_days"] / gm["total_days_supply"] * 100,
-    )
+    gm = apply_adherence_math(gm, denom_col="total_days_supply")
     log.decide(
         "meps_adherence_ratio caps numerator at min(sum RXDAYSUP, 365, "
         "eligible_days). This is PDC-style (100% ceiling), not MPR-style "

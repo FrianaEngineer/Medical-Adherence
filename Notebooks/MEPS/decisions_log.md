@@ -1,13 +1,94 @@
+# How to read this project (student-friendly narrative)
+
+This file is the guided tour of the MEPS medical-adherence pipeline. Read this section first, then open `2023_clean.ipynb` and follow along. Every design choice below has a "why" — that is what matters. The pipeline itself is straightforward pandas; the hard part is knowing which choice would have been wrong.
+
+## The question
+
+Given a person's demographics, insurance, cost exposure, and the chronic medications they filled during a year, can we predict whether they were adherent to those medications? "Adherent" here means the prescription-refill ratio (days supplied ÷ days eligible) reached ≥60% for the year, PDC-style (capped at 100%). We use 2023 as the primary year and MEPS as the data source.
+
+## The data
+
+Four files per year from AHRQ's Medical Expenditure Panel Survey:
+
+| File     | What it contains                                                             |
+|----------|------------------------------------------------------------------------------|
+| `h248a`  | Prescription fills — one row per pickup, with days supply, cost, drug name.  |
+| `h249`   | Conditions — one row per (person, condition), with ICD-10 3-digit code.      |
+| `h248if1`| CLNK — event ↔ condition linkage table (the "bridge" between fills and dx).  |
+| `h251`   | Person-level demographics, insurance, poverty, marital, region, education.   |
+
+Plus two hand-curated lookups: `is_chronic.xlsx` (chronic ICD allowlist) and `unique_rxname_chronic_labeled_revised.csv` (chronic/flare/acute label per drug name).
+
+## The pipeline, stage by stage
+
+1. **Load `h248a`, drop unusable fills.** Keep `RXDAYSUP` 1–989 (999 is the MEPS "as needed" flag, not a day count — treating it as data would create fake 100% adherence). Drop rows with `RXBEGYRX ≤ 0` (unusable start-year sentinels: -1 refused, -7 don't know, -8 inapplicable).
+2. **Label chronic conditions.** Join `h249` to the 3-digit ICD-10 chronic allowlist, keep only chronic rows. Analysis is scoped to chronic-disease adherence, so acute one-off diagnoses are not the target.
+3. **Link fills to conditions through CLNK.** `h248a.LINKIDX = h248if1.EVNTIDX`, filtered to `EVENTYPE == 8` (prescription-medicine events only). Never join on DUPERSID alone (Cartesian explosion) and never on LINKIDX alone (round-scoped, collides across people).
+4. **CLNK many-to-many dedup — the invariant that used to break.** A single fill linked to N chronic conditions appears N times after step 3. Summing `RXDAYSUP` at that point double-counts days and silently drops all but the first ICD. Fix: deduplicate on `(DUPERSID, DRUGIDX, RXRECIDX)` **before** summing, then build a separate bridge frame at `(DUPERSID, DRUGIDX, ICD10CDX, CONDIDX)` grain for condition-level rollups. The bridge carries no days-supply column so it cannot be accidentally summed. `test_pipeline.py::test_multi_condition_fill_counts_days_once` locks this behavior.
+5. **Groupby to person-drug grain.** Sum `RXDAYSUP` per `(DUPERSID, DRUGIDX)` on the deduped fills. Attach the multi-condition context: `n_chronic_conditions`, `chronic_conditions` (comma-joined list), and a primary ICD alias for backwards-compat.
+6. **Drug-side chronic filter.** Drop fills whose drug name is labeled `flare_up` or `non_chronic` — prevents acute meds (antibiotics, steroid bursts, topical FLUOROURACIL) from contaminating chronic adherence.
+7. **PSTATS-based reference days (the denominator).** Load `h251`, walk each person's round-1/2/3 PSTATS status codes and BEGRF/ENDRF month-year windows, produce per-person eligible days in 2023. Full-year 11/11/11 respondents get 365; deceased get a shortened window ending at their round's ENDRF; dropouts get the window up to their exit. Documented in `clean_meps._compute_reference_coverage` and tested in `test_pipeline.py`.
+8. **Drug-start-date adjustment (the second denominator constraint).** A drug first prescribed in July 2023 does not deserve a 365-day denominator; it deserves 184 (July 1 → Dec 31). Formula: `total_days_supply = min(pstats_days, drug_start_days)` where `drug_start_days = 365` for old drugs and MEPS-sentinel start months, else `Dec 31 − first-of-first-month + 1`. This dropped mean adherence from 61.2% to 61.2% and moved median from 49.3% to 65.2% — old drugs kept 365, mid-year starters got shorter, more honest windows.
+9. **Compute the adherence ratio.** `total_valid_days = min(RXDAYSUP, 365, total_days_supply)`; `ratio = 100 × total_valid_days ÷ total_days_supply` (NaN if denom is 0). PDC-style: capped at 100%. Not MPR-style (uncapped). The cap is a choice, not a mistake — documented so it can be relaxed if needed.
+10. **Model preparation.** One-hot encode drug names + ICDs (multi-hot from `chronic_conditions`), collapse to one row per patient. Build three parallel feature sets: `model_df` (with RXNAME), `model_df_no_rx` (drops RXNAME dummies — XGBoost can't cleanly handle that cardinality), `model_df_no_rx_tc` (adds patient-level TC1S1 drug-class dummies).
+
+## The models — three-step arc
+
+At the bottom of the notebook, three XGBoost models are trained on the same target, same CV strategy, same hyperparameter grid. Only the feature set changes. That is the point — it isolates what each layer of information contributes.
+
+| Model | Features                                                                                 | What it answers                                                        |
+|-------|------------------------------------------------------------------------------------------|------------------------------------------------------------------------|
+| **A — baseline**       | Demographics, insurance, cost, ICD dummies, no drug identity                 | How well can patient context alone predict adherence?                  |
+| **B — drug class**     | A + TC1S1 patient-level drug-class dummies                                   | Does knowing the drug class add signal over patient context?           |
+| **C — paper enriched** | B + MARRYXX, REGIONXX, EDUCYR, RACETHX, medication_dose/freq/freq_bin        | Do the socioeconomic + dosing variables the literature flagged help?   |
+
+Which features are added in **C** and why they're there:
+
+| Variable                 | MEPS column     | Cited by                                                       |
+|--------------------------|-----------------|----------------------------------------------------------------|
+| Marital status           | `MARRYXX`       | Scoping review (JMIRx Med 2021, PMC10414315)                   |
+| Geographic region        | `REGIONXX`      | Haas et al. (JMIR Med Inform 2019, PMC6470459) + scoping       |
+| Education years          | `EDUCYR`        | Scoping review                                                 |
+| Race/ethnicity           | `RACETHX`       | Scoping review                                                 |
+| Medication dose          | `RXSTRENG`      | Haas et al. + scoping                                          |
+| Medication frequency     | `RXQUANTY/RXDAYSUP` | Toy et al. (COPD, ScienceDirect S0954611110003926)         |
+| Med-freq bins (1x/2x/3x/4x+) | derived     | Toy et al. — categorical binning of dosing frequency           |
+
+MARRYXX and REGIONXX are backfilled newest-round-first (`23X → 53 → 42 → 31`) so a patient in only one round still gets a value. Negative MEPS sentinels (-1, -7, -8) are treated as missing.
+
+The grid is trimmed to 16 combinations (2×2×2×2 on `max_depth`, `n_estimators`, `learning_rate`, `subsample`) × 5-fold CV = 80 fits per model. XGBoost runs with `tree_method="hist"` + `n_jobs=-1` for CPU parallelism on Apple Silicon (there is no MPS backend for XGBoost — verified against the official docs).
+
+Each model reports: features count, CV best AUC, test AUC / F1 / precision / recall, best hyperparameters. Then Gini (gain) importance and SHAP (TreeExplainer, 500-row sample) run for all three so you can compare *what* the model actually learned.
+
+## What we deliberately do NOT do
+
+- **No same-year label leakage.** `is_adherent`, `meps_adherence_ratio`, `total_valid_days`, `total_days_supply`, `drug_start_days`, `n_drugs`, `n_conditions` are all dropped from the feature matrix.
+- **No GPU pretense.** sklearn, XGBoost, and SHAP have no Apple Silicon GPU backend. Adding fake `device=` code that silently falls back to CPU would teach the wrong lesson. CPU + `hist` + `n_jobs=-1` is the fast path on M4.
+- **No cross-year longitudinal model.** Each year is independent. That is a limitation; the scoping review's "initial medication adherence" predictor would need panel linkage, which we do not do.
+- **No claim of clinical validity.** These predictions describe adherence in a survey sample, not a clinical population. Same-year classification, not future prediction.
+
+## Reproducing
+
+- One year: `python Notebooks/MEPS/app/2023_clean.py` (calls `clean_meps.run_exports(2023)`).
+- All four years cached: run 2020/2021/2022/2023 in turn, then the all-years merge is auto-produced.
+- Tests: `cd Notebooks/MEPS/app && pytest tests/ -v` — 47 tests, gates + pipeline extracts.
+- App: `cd Notebooks/MEPS/app && streamlit run simple_app.py`.
+
+---
+
+## Historical / freeform notes
+
 what do we do with the 27% of rows where we don't know RXDAYSUP. Drop them? Impute to median? Flag and keep? We will choose 'flag and keep' for most uses, and 'drop' only for the MPR numerator calculation.
 
 what is the MPR numerator calculation
 
-We should drop the rows where we dont know the day supply because that would make it difficult to determine the amount of medication they are supposed to take daily. 
+We should drop the rows where we dont know the day supply because that would make it difficult to determine the amount of medication they are supposed to take daily.
+
 ---
 
-# Decisions Log
+## Decisions Log (auto-appended)
 
-Auto-appended by `clean_meps.build()`. Each block records one invocation of the pipeline — rows and patients lost at every stage, columns dropped, and decisions taken.
+Each block below is written by `clean_meps.build()` on every run — rows and patients lost at every stage, columns dropped, and decisions taken. The heading line still starts with `## YYYY build` so the appender keeps working.
 
 ## 2020 build — 2026-07-05T14:39:52.889445+00:00
 
