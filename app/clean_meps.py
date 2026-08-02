@@ -138,21 +138,30 @@ class RunLog:
 # Path resolution
 # ---------------------------------------------------------------------------
 
-# Scripts live in ``Notebooks/MEPS/app/``; outputs / decisions log stay on MEPS/.
+# App scripts now live at ``<repo>/app/`` (moved from ``Notebooks/MEPS/app/``).
+# Outputs + decisions_log stay under ``Notebooks/MEPS/`` so historical data
+# (parquets, tables, decisions_log) isn't orphaned. Data files stay under
+# ``<repo>/data/MEPS/`` — resolved dynamically by ``resolve_meps_dir``.
 APP_DIR = Path(__file__).resolve().parent
-MEPS_DIR = APP_DIR.parent
-NOTEBOOK_DIR = MEPS_DIR  # back-compat alias used by output_dirs / resolve helpers
+REPO_ROOT = APP_DIR.parent
+NOTEBOOK_DIR = REPO_ROOT / "Notebooks" / "MEPS"
+# Back-compat alias: pre-move code and ``write_log`` expect ``MEPS_DIR`` to
+# point at the notebooks folder (where decisions_log.md lives). Keeping the
+# name so importers (simple_app.py, tests) don't need to change.
+MEPS_DIR = NOTEBOOK_DIR
 
 
 def resolve_meps_dir(start: Path | None = None) -> Path:
     """Walk up from ``start`` (or CWD) looking for ``data/MEPS`` with year files."""
     cwd = (start or Path.cwd()).resolve()
     markers = [cfg["rx"] for cfg in YEAR_FILES.values()]
-    candidates = []
+    candidates: list[Path] = []
+    # CWD-relative candidates (works when invoked from any subdir)
     for base in [cwd, cwd.parent, cwd.parent.parent, cwd.parent.parent.parent]:
         candidates += [base / "data" / "MEPS" / "excels", base / "data" / "MEPS"]
-    candidates.append(MEPS_DIR.parent.parent / "data" / "MEPS")
-    candidates.append(APP_DIR.parent.parent.parent / "data" / "MEPS")
+    # Repo-relative fallback: repo_root/data/MEPS regardless of CWD
+    candidates.append(REPO_ROOT / "data" / "MEPS" / "excels")
+    candidates.append(REPO_ROOT / "data" / "MEPS")
     for d in candidates:
         if d.exists() and any((d / m).exists() for m in markers):
             return d
@@ -310,7 +319,7 @@ def export_merged_all_years(meps_dir: str | Path | None = None) -> Path | None:
     Writes a fast **parquet** cache (what the app loads), plus filter-option JSON
     and a short summary. Run from the terminal::
 
-        cd Notebooks/MEPS/app
+        cd app
         python clean_meps.py cache-all-years
 
     Returns the parquet path, or ``None`` if no year exports exist yet.
