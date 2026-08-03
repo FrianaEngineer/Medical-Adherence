@@ -121,16 +121,27 @@ def _harmonize_year_columns(df: pd.DataFrame, year: int) -> pd.DataFrame:
 
 
 @st.cache_data(show_spinner=False)
+def _cached_parquet(path_str: str, _mtime: float) -> pd.DataFrame:
+    return pd.read_parquet(path_str)
+
+
+@st.cache_data(show_spinner=False)
+def _cached_excel(path_str: str, _mtime: float) -> pd.DataFrame:
+    try:
+        return pd.read_excel(path_str, engine="calamine")
+    except Exception:
+        return pd.read_excel(path_str)
+
+
 def load_merged_frame() -> pd.DataFrame | None:
     """Load the prebuilt all-years parquet cache (from ``cache-all-years``)."""
     tables = all_years_output_dirs()[0]
     parquet = tables / ALL_YEARS_PARQUET
     xlsx = tables / "new_grouped_merge_df_chronic_drugs.xlsx"
     if parquet.exists():
-        return pd.read_parquet(parquet)
+        return _cached_parquet(str(parquet), parquet.stat().st_mtime)
     if xlsx.exists():
-        # Legacy fallback if only the old Excel merge exists
-        return pd.read_excel(xlsx)
+        return _cached_excel(str(xlsx), xlsx.stat().st_mtime)
     return None
 
 
@@ -145,7 +156,6 @@ def load_all_years_filter_options() -> dict | None:
     return json.loads(path.read_text())
 
 
-@st.cache_data(show_spinner=False)
 def load_bridge_frame() -> pd.DataFrame | None:
     """Load the all-years patient-drug × condition bridge (one row per pair × chronic ICD)."""
     tables = all_years_output_dirs()[0]
@@ -157,16 +167,15 @@ def load_bridge_frame() -> pd.DataFrame | None:
             "multi-condition attribution."
         )
         return None
-    return pd.read_parquet(parquet)
+    return _cached_parquet(str(parquet), parquet.stat().st_mtime)
 
 
-@st.cache_data(show_spinner=False)
 def load_year_bridge(year: int) -> pd.DataFrame | None:
     """Load the per-year patient-drug × condition bridge."""
     parquet = tables_dir(year) / BRIDGE_PARQUET
     if not parquet.exists():
         return None
-    return pd.read_parquet(parquet)
+    return _cached_parquet(str(parquet), parquet.stat().st_mtime)
 
 
 def resolve_active_bridge(year_selection: int | str) -> pd.DataFrame | None:
@@ -314,7 +323,11 @@ def load_sex_lookup(year: int) -> pd.DataFrame | None:
 
 
 def exports_ready(year: int) -> bool:
-    return table_path(year, "new_grouped_merge_df_chronic_drugs.xlsx").exists()
+    """True when the chronic-drug analysis frame exists (parquet preferred, xlsx ok)."""
+    tables = tables_dir(year)
+    return (tables / "new_grouped_merge_df_chronic_drugs.parquet").exists() or (
+        tables / "new_grouped_merge_df_chronic_drugs.xlsx"
+    ).exists()
 
 
 def fmt_pct(value: float | None) -> str:
@@ -330,7 +343,19 @@ def fmt_int(value: float | int | None) -> str:
 
 
 def load_main_frame(year: int) -> pd.DataFrame | None:
-    return load_table(year, "new_grouped_merge_df_chronic_drugs.xlsx")
+    """Load the chronic-drug person–drug frame for one year.
+
+    Prefers parquet (what ``clean_meps`` / ``run_exports`` write for every year).
+    Falls back to the Excel export when only that exists (older 2023-only workflow).
+    """
+    tables = tables_dir(year)
+    parquet = tables / "new_grouped_merge_df_chronic_drugs.parquet"
+    xlsx = tables / "new_grouped_merge_df_chronic_drugs.xlsx"
+    if parquet.exists():
+        return _cached_parquet(str(parquet), parquet.stat().st_mtime)
+    if xlsx.exists():
+        return _cached_excel(str(xlsx), xlsx.stat().st_mtime)
+    return None
 
 
 def enrich_demographics(df: pd.DataFrame, year: int) -> pd.DataFrame:
@@ -682,14 +707,21 @@ def condition_compare_figure(
 
 
 @st.cache_data(show_spinner=False)
-def year_findings(year: int, threshold: int) -> dict | None:
-    """Summarize chronic-drug + PSTATS exports for the Home tab."""
-    df = load_table(year, "new_grouped_merge_df_chronic_drugs.xlsx")
+def year_findings(year: int | None, threshold: int) -> dict | None:
+    """Summarize chronic-drug + PSTATS exports for the Home tab.
+
+    ``year`` is ``None`` for the merged all-years frame.
+    """
+    if year is None:
+        df = load_merged_frame()
+        bridge = load_bridge_frame()
+    else:
+        df = load_main_frame(year)
+        bridge = load_year_bridge(year)
     if df is None or "meps_adherence_ratio" not in df.columns:
         return None
 
     ratio = df["meps_adherence_ratio"]
-    bridge = load_year_bridge(year)
     # Condition-level frame: bridge-joined so a pair counts for every linked chronic ICD.
     cond_frame = condition_view(df, bridge)
     by_condition = (
@@ -756,27 +788,25 @@ def year_findings(year: int, threshold: int) -> dict | None:
     }
 
 
-def render_year_findings(year: int, findings: dict) -> None:
+def render_year_findings(year: int | None, findings: dict) -> None:
     thr = findings["threshold"]
-    st.markdown(f"#### {year}")
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Patients", fmt_int(findings["patients"]))
     m2.metric("Person–drug pairs", fmt_int(findings["rows"]))
     m3.metric("Mean adherence", fmt_pct(findings["mean"]))
     m4.metric(f"Pairs ≥ {thr}%", fmt_pct(findings["pct_ge_threshold"]))
 
+    cohort_scope = (
+        "each survey year (2020–2023)"
+        if year is None
+        else "the year"
+    )
     st.markdown(
         f"""
 - **Cohort**: chronic medications linked to chronic conditions, with eligible days based on
-  survey participation for the year.
+  survey participation for {cohort_scope}.
 - **Scale**: {fmt_int(findings['patients'])} patients · {fmt_int(findings['drugs'])} unique drugs ·
   {fmt_int(findings['conditions'])} conditions.
-- **Central tendency**: mean {findings['mean']:.1f}% · median {findings['median']:.1f}%.
-- **Threshold**: {findings['pct_ge_threshold']:.1f}% of person–drug pairs meet the
-  {thr}% bar; {findings['pct_lt_10']:.1f}% fall below 10%.
-- **Conditions**: {findings['conditions_ge_threshold']} of
-  {findings['conditions_total']} condition groups (with ≥ 30 patients) average ≥ {thr}%.
-  Total distinct chronic conditions in the frame: {findings['conditions_total_all']}.
         """
     )
 
@@ -818,7 +848,7 @@ with st.sidebar:
     year_selection = st.selectbox(
         "MEPS year",
         YEAR_OPTIONS,
-        index=YEAR_OPTIONS.index(2023) if 2023 in YEAR_OPTIONS else 0,
+        index=0,  # default: All years
     )
     frame_preview, year, year_label = resolve_active_frame(year_selection)
 
@@ -954,10 +984,9 @@ with st.sidebar:
                 cached_build.clear()
                 load_sex_lookup.clear()
                 year_findings.clear()
-                load_merged_frame.clear()
+                _cached_parquet.clear()
+                _cached_excel.clear()
                 load_all_years_filter_options.clear()
-                load_bridge_frame.clear()
-                load_year_bridge.clear()
                 st.success(f"{year_label} data refreshed.")
                 st.rerun()
             except Exception as exc:
@@ -965,10 +994,9 @@ with st.sidebar:
 
     if st.button("Rebuild analysis frame", use_container_width=True):
         cached_build.clear()
-        load_merged_frame.clear()
+        _cached_parquet.clear()
+        _cached_excel.clear()
         load_all_years_filter_options.clear()
-        load_bridge_frame.clear()
-        load_year_bridge.clear()
         with st.spinner(f"Rebuilding {year_label} analysis frame…"):
             try:
                 if year is None:
@@ -1015,135 +1043,67 @@ tab_home, tab_analysis, tab_method, tab_viz, tab_gates = st.tabs(
 
 with tab_home:
     st.title("MEPS Medical Adherence")
-    st.write(
-        "**The question in one sentence:** are people taking their chronic "
-        "medications regularly, and who isn't?"
-    )
 
-    st.subheader("What we did")
+    st.subheader("Project Goals")
     st.markdown(
         """
-For each person and each chronic drug they filled in a given year (2020–2023),
-we estimate how much of the year they had medication on hand — then compare
-that against how long they were actually eligible to fill prescriptions.
-The data comes from the **Medical Expenditure Panel Survey (MEPS)**, an
-annual national health survey run by AHRQ.
+- Identify chronic conditions and medication groups associated with lower adherence.
+- Examine the economic, clinical, and demographic factors linked to adherence patterns.
+- Support the development of future predictive models for medication non-adherence.
+- Produce transparent, reproducible, and comparable results across multiple years.
         """
     )
 
-    st.subheader("How we measure adherence")
+    st.subheader("What Is Medication Adherence?")
     st.markdown(
         """
-For every (person, drug) pair we compute a **PDC-style ratio**:
-
-```
-adherence % = min(days supplied, 365, eligible days) ÷ eligible days × 100
-```
-
-- **days supplied** = sum of RXDAYSUP across that person's fills of that drug in the year (deduplicated so one fill isn't counted twice — see below)
-- **eligible days** = derived from MEPS PSTATS participation codes:
-  full-year respondents get **365**; people who died mid-year, dropped out,
-  or joined late get a **shortened window** based on their round dates
-- If the drug was **first prescribed mid-year**, the denominator is further
-  shortened to the days from the first-fill month through Dec 31
-
-Capped at 100% (PDC-style, not uncapped MPR). We treat **≥ 60%** as an
-exploratory adherent-vs-not threshold — that is a **choice for this analysis**,
-not a clinical standard.
+- Medication adherence refers to how consistently a person takes medication as prescribed.
+- This includes taking the correct medication quantity over a prolonged period of time.
+- MEPS data is survey-based research where each round happens every 3–4 months to estimate
+  refill activity and days of medication supply. These measures indicate whether medication
+  was likely available to the patient, rather than confirming that each dose was taken.
+- Adherence is especially important for chronic conditions that require continuous, long-term treatment.
+- Poor medication adherence is associated with reduced disease control, preventable
+  hospitalizations, and higher healthcare costs.
         """
     )
 
-    st.subheader("What could go wrong (and what we did about it)")
+    st.subheader("About the Project")
     st.markdown(
         """
-Questions a reviewer would ask, and how the pipeline answers them:
-
-- **"Is your adherence number even right?"** &nbsp; Six automated data-quality
-  gates run on every export — numerator ≤ denominator, ratio ∈ [0, 100],
-  no negative days, every condition confirmed chronic, age valid, one-hot
-  encoding valid. See the **Gates** tab.
-- **"What if a single fill treats multiple chronic conditions?"** &nbsp;
-  A prescription linked to both diabetes AND hypertension used to appear
-  twice in the merge, inflating days supplied by ~4.8%. Fixed by
-  **deduplicating on (person, drug, fill) before summing**, with a separate
-  bridge table for condition-level rollups. Locked in with a regression test.
-- **"Are you leaking the label into the features?"** &nbsp; The modeling
-  notebook explicitly drops `is_adherent`, `meps_adherence_ratio`,
-  `total_valid_days`, `total_days_supply`, `drug_start_days`, `n_drugs`,
-  `n_conditions` before training.
-- **"Are your four years drifting apart?"** &nbsp; One shared pipeline
-  (`app/clean_meps.py`) processes 2020–2023. Only file names differ per year.
-- **"Where's the evidence you tested this?"** &nbsp; **47 unit tests**
-  (31 gates + 16 pipeline stages). Run `pytest app/tests/ -v` from the repo root.
-- **"What's the modeling story?"** &nbsp; Three XGBoost models in
-  `2023_clean.ipynb` build on each other — A (patient context only) →
-  B (+ drug class) → C (+ socioeconomic variables from the literature).
-  Same CV strategy and hyperparameter grid across all three; the only
-  variable is the feature set. `HalvingGridSearchCV` on the full grid.
-- **"Is 60% clinically defensible?"** &nbsp; No — real PDC studies typically
-  use 80%. 60% here is an exploratory bar for a survey (not claims) dataset;
-  the threshold is a **sidebar slider** so the reader can retune it.
+- This project uses nationally representative data from the Agency for Healthcare Research
+  and Quality’s Medical Expenditure Panel Survey (MEPS) for 2020–2023.
+- Since the survey was only conducted a couple months per year — only used chronic conditions
+  because they are more likely to have more complications/side effects which may lead to a
+  higher chance of non-adherence.
+- Prescription records were linked to chronic conditions, while medications used for acute
+  illnesses or temporary flare-ups were excluded.
+- The project evaluates factors that may influence medication adherence, including:
+  - Economic status
+  - Insurance coverage
+  - Medication costs
+  - Age
+  - Sex
+  - Chronic-condition burden
+  - Other patient characteristics
         """
     )
 
-    st.subheader("How to read this app")
-    st.markdown(
-        """
-- **Home** *(you are here)* — the story + year-by-year summary numbers
-- **Analysis** — filter by year, sex, age, income, insurance, condition;
-  drug-level and condition-level adherence tables
-- **Methodology** — deeper technical notes on the pipeline
-- **Visualization** — distribution plots + cross-condition comparisons
-- **Gates** — the automated data-quality checks and what they enforce
-        """
-    )
-
-    st.subheader("Findings by year")
+    # Findings for the selected year (or all years)
+    st.divider()
+    st.subheader(f"Findings · {year_label}")
     st.caption(
-        f"Summaries use chronic medications with participation-based eligible days. "
+        f"Chronic medications with participation-based eligible days. "
         f"Threshold: **{threshold}%**. "
         "Demographic filters apply on Analysis / Visualization."
     )
-
-    any_findings = False
-    for y in YEARS:
-        findings = year_findings(y, threshold)
-        if findings is None:
-            st.warning(f"{y}: data not found — use Refresh year data in the sidebar.")
-            continue
-        any_findings = True
-        with st.expander(f"{y} summary", expanded=(y == year)):
-            render_year_findings(y, findings)
-
-    if any_findings:
-        st.markdown("##### Cross-year pattern")
-        rows = []
-        for y in YEARS:
-            f = year_findings(y, threshold)
-            if f is None:
-                continue
-            rows.append(
-                {
-                    "Year": y,
-                    "Patients": f["patients"],
-                    "Person–drug pairs": f["rows"],
-                    "Mean adherence %": round(f["mean"], 1),
-                    "Median %": round(f["median"], 1),
-                    f"% pairs ≥ {threshold}": round(f["pct_ge_threshold"], 1),
-                    "Conditions ≥ threshold": (
-                        f"{f['conditions_ge_threshold']}/{f['conditions_total']}"
-                    ),
-                }
-            )
-        if rows:
-            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-            st.markdown(
-                f"""
-Across 2020–2023, mean chronic person–drug adherence sits in the high-50s to ~60%.
-Condition-level averages vary widely — sparse codes can look extreme; read with sample-size
-caution. The sidebar threshold is currently **{threshold}%**.
-                """
-            )
+    findings = year_findings(year, threshold)
+    if findings is None:
+        st.warning(
+            f"{year_label}: data not found — use Refresh year data in the sidebar."
+        )
+    else:
+        render_year_findings(year, findings)
 
 
 # ---- Analysis -------------------------------------------------------------
@@ -1220,54 +1180,270 @@ with tab_analysis:
 
 # ---- Methodology ----------------------------------------------------------
 
-with tab_method:
+# Worked-example counts from the documented 2023 build (decisions_log.md).
+# Intermediate stage counts are year-specific; only 2023 is fully logged today.
+METHOD_EXAMPLE_YEAR = 2023
+METHOD_COUNTS_2023 = {
+    "rx_fills_in": "192,275",
+    "rx_persons_in": "11,858",
+    "rx_fills_clean": "114,018",
+    "rx_persons_clean": "9,255",
+    "chronic_cond_rows": "30,372",
+    "chronic_cond_persons": "10,137",
+    "linked_rows": "84,334",
+    "linked_persons": "6,820",
+    "person_drug_all": "21,718",
+    "person_drug_chronic": "16,461",
+    "persons_final": "5,968",
+}
+
+
+def _method_file_stems(y: int) -> dict[str, str]:
+    files = YEAR_FILES[y]
+    return {
+        "rx": Path(files["rx"]).stem,
+        "clnk": Path(files["clnk"]).stem,
+        "cond": Path(files["cond"]).stem,
+        "person": Path(files["person"]).stem,
+    }
+
+
+def render_methodology(
+    *,
+    example_year: int,
+    year_label: str,
+    is_all_years: bool,
+    threshold: int,
+    final_rows: int | None = None,
+    final_persons: int | None = None,
+) -> None:
+    """Render the Methods narrative for All years or a single-year selection."""
+    stems = _method_file_stems(example_year)
+    c = METHOD_COUNTS_2023
+    # When viewing a non-2023 year, keep the same steps but do not imply
+    # 2023 intermediate counts apply. Final sample can come from the loaded frame.
+    use_2023_counts = example_year == METHOD_EXAMPLE_YEAR
+    if use_2023_counts:
+        n_final = c["person_drug_chronic"]
+        n_persons = c["persons_final"]
+        n_pairs_pre = c["person_drug_all"]
+    else:
+        n_final = f"{final_rows:,}" if final_rows is not None else "the retained"
+        n_persons = f"{final_persons:,}" if final_persons is not None else "the retained"
+        n_pairs_pre = "the aggregated"
+
     st.header(f"Methodology · {year_label}")
-    st.write(
-        "This section summarizes how the adherence measure is built from the "
-        "Medical Expenditure Panel Survey (MEPS) prescription, condition, and "
-        "survey-participation information."
+    st.subheader("Methods")
+
+    if is_all_years:
+        st.markdown(
+            "The same cleaning and adherence pipeline is applied independently to each "
+            f"MEPS year ({YEARS[0]}–{YEARS[-1]}). The steps below use **{example_year}** "
+            "as the worked example (file numbers and sample sizes differ by year)."
+        )
+    elif not use_2023_counts:
+        st.markdown(
+            f"The steps below describe the {example_year} pipeline. Intermediate "
+            f"row counts illustrated in the project documentation are from the "
+            f"{METHOD_EXAMPLE_YEAR} build; final sample size reflects the loaded "
+            f"{example_year} export when available."
+        )
+
+    st.markdown("**Step 1: Clean the prescription data.**")
+    if use_2023_counts:
+        st.markdown(
+            f"The analysis began with {c['rx_fills_in']} prescription fills among "
+            f"{c['rx_persons_in']} persons in the {example_year} MEPS Prescribed Medicines "
+            f"file ({stems['rx']}). Records were retained when RXDAYSUP was between 1 and 989. "
+            f"Values of 999, which represent as-needed medication use, and negative MEPS "
+            f"sentinel values were excluded. Records without a valid medication start year "
+            f"in RXBEGYRX were also removed. After cleaning, {c['rx_fills_clean']} fills "
+            f"among {c['rx_persons_clean']} persons remained."
+        )
+    else:
+        st.markdown(
+            f"The analysis began with prescription fills in the {example_year} MEPS "
+            f"Prescribed Medicines file ({stems['rx']}). Records were retained when "
+            f"RXDAYSUP was between 1 and 989. Values of 999, which represent as-needed "
+            f"medication use, and negative MEPS sentinel values were excluded. Records "
+            f"without a valid medication start year in RXBEGYRX were also removed."
+        )
+
+    st.markdown("**Step 2: Identify chronic conditions.**")
+    if use_2023_counts:
+        st.markdown(
+            f"The Medical Conditions file ({stems['cond']}) was merged with a "
+            f"study-defined chronic-condition allowlist. Conditions with `is_chronic` "
+            f"greater than zero were retained, resulting in {c['chronic_cond_rows']} "
+            f"chronic-condition records among {c['chronic_cond_persons']} persons."
+        )
+    else:
+        st.markdown(
+            f"The Medical Conditions file ({stems['cond']}) was merged with a "
+            f"study-defined chronic-condition allowlist. Conditions with `is_chronic` "
+            f"greater than zero were retained."
+        )
+
+    st.markdown("**Step 3: Link prescriptions to chronic conditions.**")
+    if use_2023_counts:
+        st.markdown(
+            f"Prescription fills were linked to chronic conditions through the CLNK file "
+            f"({stems['clnk']}). Only prescribed medicine events, identified by EVENTYPE "
+            f"equal to 8, were included. Records were matched using DUPERSID and the event "
+            f"identifier, with LINKIDX from {stems['rx']} matched to EVNTIDX in CLNK. "
+            f"Unlinked prescription fills were removed, producing {c['linked_rows']} "
+            f"fill–condition records among {c['linked_persons']} persons."
+        )
+    else:
+        st.markdown(
+            f"Prescription fills were linked to chronic conditions through the CLNK file "
+            f"({stems['clnk']}). Only prescribed medicine events, identified by EVENTYPE "
+            f"equal to 8, were included. Records were matched using DUPERSID and the event "
+            f"identifier, with LINKIDX from {stems['rx']} matched to EVNTIDX in CLNK. "
+            f"Unlinked prescription fills were removed."
+        )
+
+    st.markdown("**Step 4: Remove duplicate prescription fills.**")
+    st.markdown(
+        "Because a single fill could be linked to multiple chronic conditions, the merged "
+        "data could contain duplicate physical fills. Records were deduplicated using "
+        "DUPERSID, DRUGIDX, and RXRECIDX before RXDAYSUP was summed. A separate "
+        "patient–drug–condition table was retained to preserve information about all "
+        "linked conditions without duplicating days of supply."
     )
 
-    st.subheader("Pipeline overview")
+    st.markdown("**Step 5: Create person–drug records.**")
+    if use_2023_counts:
+        st.markdown(
+            f"Prescription fills were aggregated to one row per person and drug. "
+            f"RXDAYSUP was summed, the earliest medication start year and valid start "
+            f"month were retained, and linked chronic conditions were summarized. This "
+            f"produced {n_pairs_pre} person–drug pairs."
+        )
+    else:
+        st.markdown(
+            "Prescription fills were aggregated to one row per person and drug. "
+            "RXDAYSUP was summed, the earliest medication start year and valid start "
+            "month were retained, and linked chronic conditions were summarized."
+        )
+
+    st.markdown("**Step 6: Restrict the sample to maintenance medications.**")
+    if use_2023_counts:
+        st.markdown(
+            f"Medications were classified using a manually labeled list of 1,158 unique "
+            f"RXNAME values: 518 chronic, 373 flare-up, and 267 non-chronic. Flare-up and "
+            f"non-chronic treatments, such as antibiotics, short steroid courses, and "
+            f"selected topical medications, were excluded. The resulting sample contained "
+            f"{n_final} person–drug pairs among {n_persons} persons."
+        )
+    else:
+        st.markdown(
+            "Medications were classified using a manually labeled list of 1,158 unique "
+            "RXNAME values: 518 chronic, 373 flare-up, and 267 non-chronic. Flare-up and "
+            "non-chronic treatments, such as antibiotics, short steroid courses, and "
+            "selected topical medications, were excluded. "
+            + (
+                f"The resulting {example_year} sample contained {n_final} person–drug "
+                f"pairs among {n_persons} persons."
+                if final_rows is not None
+                else f"The resulting {example_year} sample retains chronic medications only."
+            )
+        )
+
+    st.markdown("**Step 7: Add demographic and participation data.**")
     st.markdown(
-        """
-1. Load prescription fill records for the selected year
-2. Keep fills with a usable days-supply value (drop “as needed” and missing codes)
-3. Keep fills with a usable medication start year
-4. Keep only prescription-medicine event links
-5. Link fills to chronic conditions using a chronic-condition allowlist
-6. Collapse to one row per person–drug pair
-7. Keep chronic medications only (exclude acute / flare-up drugs)
-8. Add demographics and compute each person’s eligible days from survey participation
-   (PSTATS — person status / participation codes)
-9. Compute a Proportion of Days Covered (PDC)–style adherence ratio:
-   estimated days supplied ÷ eligible days × 100, capped at 100%
-        """
+        f"Demographic and survey-participation variables from the Full-Year Consolidated "
+        f"file ({stems['person']}) were merged using DUPERSID. Missing age values were "
+        f"labeled as “unknown.”"
     )
 
-    st.subheader("Key definitions")
+    st.markdown("**Step 8: Calculate person-level eligible days.**")
     st.markdown(
-        f"""
-- **Eligible days**: how long the person is observed in the survey year (full year = 365;
-  shorter if participation ends early)
-- **Adherence ratio**: coverage of medication supply over eligible days
-- **Exploratory threshold**: currently **{threshold}%** in the sidebar (not a clinical standard)
-- **Unit of analysis**: one person–drug pair after chronic-condition and chronic-drug filters
-        """
+        "Eligible observation days were calculated using person-status and "
+        "reference-period variables for rounds 3/1, 4/2, and 5/3. Respondents with "
+        "full-year participation were assigned 365 eligible days. For other respondents, "
+        "the observation window was based on their survey entry, participation, and exit "
+        "dates. Death, relocation, or other participation-ending statuses closed the "
+        "observation window. Unknown statuses were flagged rather than treated as active "
+        "participation."
+    )
+    st.markdown(
+        "Persons who did not participate in Round 5/3 were retained but flagged because "
+        "their shorter observation period could produce higher adherence estimates."
     )
 
-    st.subheader("Acronyms")
+    st.markdown(f"**Step 9: Adjust for medications started during {example_year}.**")
     st.markdown(
-        """
-| Acronym | Meaning |
-|--------|---------|
-| **AHRQ** | Agency for Healthcare Research and Quality |
-| **MEPS** | Medical Expenditure Panel Survey (sponsored by AHRQ) |
-| **PDC** | Proportion of Days Covered — share of eligible days with medication supply on hand |
-| **PSTATS** | Person status codes in MEPS that record survey participation / disposition by round |
-| **ICD-10** | International Classification of Diseases, 10th Revision (condition diagnosis codes) |
-| **NDC** | National Drug Code (medication product identifier) |
-        """
+        f"When a medication began during {example_year} and had a valid start month, the "
+        f"drug-specific observation period was calculated from the first day of that month "
+        f"through December 31. Medications that began before {example_year} or had an "
+        f"unknown start month retained the person-level observation period. The final "
+        f"denominator was the smaller of the person-level and drug-specific observation "
+        f"windows."
+    )
+
+    st.markdown("**Step 10: Calculate medication adherence.**")
+    st.markdown(
+        "Adherence was calculated using a Proportion of Days Covered–style measure:"
+    )
+    st.latex(
+        r"\text{Adherence} = "
+        r"100 \times "
+        r"\dfrac{\min(\text{summed RXDAYSUP},\, 365,\, \text{eligible days})}"
+        r"{\text{eligible days}}"
+    )
+    st.markdown(
+        f"The numerator was capped at the eligible observation period so adherence could "
+        f"not exceed 100%. Adherence was recorded as missing when eligible days equaled "
+        f"zero. A {threshold}% threshold was used only for exploratory visualizations and "
+        f"was not considered a clinical standard."
+    )
+
+    st.markdown("**Step 11: Define the final analytic sample.**")
+    if use_2023_counts:
+        st.markdown(
+            f"The final dataset contained {n_final} person–drug observations among "
+            f"{n_persons} unique persons. The measure reflects estimated medication "
+            f"availability rather than confirmed medication use. Important limitations "
+            f"include the absence of exact prescription fill dates, missing days-of-supply "
+            f"values, broad three-digit ICD-10 codes, study-defined chronic-condition and "
+            f"medication classifications, and possible upward bias among respondents with "
+            f"incomplete final-round participation."
+        )
+    else:
+        sample_bit = (
+            f"The final {example_year} dataset contained {n_final} person–drug "
+            f"observations among {n_persons} unique persons. "
+            if final_rows is not None
+            else f"The final {example_year} dataset retains one row per person–drug pair "
+            f"after chronic-condition and chronic-drug filters. "
+        )
+        st.markdown(
+            sample_bit
+            + "The measure reflects estimated medication availability rather than "
+            "confirmed medication use. Important limitations include the absence of exact "
+            "prescription fill dates, missing days-of-supply values, broad three-digit "
+            "ICD-10 codes, study-defined chronic-condition and medication classifications, "
+            "and possible upward bias among respondents with incomplete final-round "
+            "participation."
+        )
+
+
+with tab_method:
+    method_year = year if year is not None else METHOD_EXAMPLE_YEAR
+    method_final_rows = None
+    method_final_persons = None
+    if frame_preview is not None and not frame_preview.empty:
+        method_final_rows = len(frame_preview)
+        if "DUPERSID" in frame_preview.columns:
+            method_final_persons = int(frame_preview["DUPERSID"].nunique())
+    render_methodology(
+        example_year=method_year,
+        year_label=year_label,
+        is_all_years=(year_selection == ALL_YEARS_LABEL),
+        threshold=int(threshold),
+        final_rows=method_final_rows,
+        final_persons=method_final_persons,
     )
 
 
