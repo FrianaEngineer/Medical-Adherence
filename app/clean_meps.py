@@ -39,7 +39,7 @@ from __future__ import annotations
 
 import calendar
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import numpy as np
@@ -70,9 +70,23 @@ CHRONIC_DRUG_FILE = "unique_rxname_chronic_labeled_revised.csv"  # Friana's labe
 
 # PSTATS taxonomy per h251doc.pdf Tables 7-8. Stable across 2020-2023 (the
 # 2020 file just has more -1 nonresponse because of COVID).
-FULL_ROUND_STATUSES = {11, 13, 14, 22, 41, 42, 44, 51, 71}
+#
+# Table 8 is the source of truth for whether a code has an applicable
+# BEGRF/ENDRF window (and which instrument sections were asked):
+#   - FULL_ROUND: reference dates apply; use BEGRF→ENDRF (clamped to year).
+#   - STOP: coverage ends mid-round at ENDRF.
+#   - NO_COVERAGE: Table 8 beginning/ending dates are "Inapplicable".
+#
+# EXCLUDED_PSTATS: drop the person from the modeling cohort if ANY round
+# carries one of these codes. Denominator math below still understands the
+# full taxonomy so BEGRF/ENDRF month-year windows stay correct for statuses
+# that remain (and for unit tests of death/stop paths).
+EXCLUDED_PSTATS = {
+    12, 13, 23, 24, 31, 32, 33, 35, 36, 43, 61, 62, 63, 64, 72, 73, 74, 81,
+}
+FULL_ROUND_STATUSES = {11, 12, 13, 14, 22, 41, 42, 44, 51, 71}
 STOP_STATUSES = {32, 33, 34, 35, 36}
-NO_COVERAGE_STATUSES = {0, 12, 21, 24, 43, 62, 63, 64, 72, 73, 74, 81}
+NO_COVERAGE_STATUSES = {0, 21, 24, 43, 62, 63, 64, 72, 73, 74, 81}
 
 
 # ---------------------------------------------------------------------------
@@ -424,12 +438,42 @@ def _month_end(year, month):
     return date(int(year), int(month), calendar.monthrange(int(year), int(month))[1])
 
 
+def _union_days(intervals: list[tuple[date, date]]) -> tuple[int, date | None, date | None]:
+    """Merge inclusive date intervals and return (n_days, overall_start, overall_end)."""
+    if not intervals:
+        return 0, None, None
+    ordered = sorted((s, e) for s, e in intervals if e >= s)
+    if not ordered:
+        return 0, None, None
+    merged: list[list[date]] = [[ordered[0][0], ordered[0][1]]]
+    for start, end in ordered[1:]:
+        # contiguous if start == last_end + 1 day
+        if start <= merged[-1][1] + timedelta(days=1):
+            if end > merged[-1][1]:
+                merged[-1][1] = end
+        else:
+            merged.append([start, end])
+    days = sum((e - s).days + 1 for s, e in merged)
+    return days, merged[0][0], merged[-1][1]
+
+
+def has_excluded_pstats(df: pd.DataFrame) -> pd.Series:
+    """True when any of PSTATS31/42/53 is in ``EXCLUDED_PSTATS``."""
+    mask = pd.Series(False, index=df.index)
+    for sfx in (31, 42, 53):
+        col = f"PSTATS{sfx}"
+        if col not in df.columns:
+            continue
+        mask = mask | pd.to_numeric(df[col], errors="coerce").isin(EXCLUDED_PSTATS)
+    return mask
+
+
 def _compute_reference_coverage(row, year: int):
     """Return (eligible_days, coverage_start, coverage_end, notes).
 
-    Same algorithm as cell 55 in Friana's notebooks (patched version).
-    ``PSTATS == -1`` means the person was not in that round (skip; no days
-    added or removed).
+    Eligible days are the union of each in-scope round's BEGRF/ENDRF
+    month-year window, clamped to the calendar year. ``PSTATS == -1`` skips
+    that round. Death / STOP statuses end coverage at that round's ENDRF.
     """
     year_start = date(year, 1, 1)
     year_end = date(year, 12, 31)
@@ -437,10 +481,13 @@ def _compute_reference_coverage(row, year: int):
     ps_values = [int(row[f"PSTATS{sfx}"]) for sfx in (31, 42, 53)]
     if all(p == -1 for p in ps_values):
         return 0, None, None, "not_in_any_round"
+    # Table 8: codes 11 and 12 share the same full-round reference-date rule.
     if all(p == 11 for p in ps_values):
         return 365, year_start, year_end, "full_year_all_rounds_11"
+    if all(p == 12 for p in ps_values):
+        return 365, year_start, year_end, "full_year_all_rounds_12"
 
-    cs, ce = None, None
+    intervals: list[tuple[date, date]] = []
     notes: list[str] = []
 
     for sfx in (31, 42, 53):
@@ -455,29 +502,33 @@ def _compute_reference_coverage(row, year: int):
             notes.append(f"R{sfx}:no_coverage({ps})")
             continue
 
-        if cs is None:
-            cs = max(beg, year_start) if beg else year_start
+        start = max(beg, year_start) if beg else year_start
 
         if ps in FULL_ROUND_STATUSES:
-            if end:
-                ce = min(end, year_end)
+            stop = min(end, year_end) if end else year_end
+            if stop >= start:
+                intervals.append((start, stop))
             notes.append(f"R{sfx}:active({ps})")
         elif ps == 31:
-            if end:
-                ce = min(end, year_end)
+            stop = min(end, year_end) if end else year_end
+            if stop >= start:
+                intervals.append((start, stop))
             notes.append(f"R{sfx}:death")
             break
         elif ps in STOP_STATUSES:
-            if end:
-                ce = min(end, year_end)
+            stop = min(end, year_end) if end else year_end
+            if stop >= start:
+                intervals.append((start, stop))
             notes.append(f"R{sfx}:stop({ps})")
             break
         else:
             notes.append(f"R{sfx}:UNCLASSIFIED({ps})")
 
-    if cs is None or ce is None or ce < cs:
-        return 0, None, None, "no_coverage"
-    return (ce - cs).days + 1, cs, ce, ";".join(notes)
+    days, cs, ce = _union_days(intervals)
+    if days == 0 or cs is None or ce is None:
+        detail = ";".join(notes) if notes else "no_coverage"
+        return 0, None, None, detail
+    return days, cs, ce, ";".join(notes)
 
 
 # ---------------------------------------------------------------------------
@@ -618,7 +669,9 @@ def compute_reference_days(person: pd.DataFrame, year: int) -> pd.DataFrame:
 
     person_demo["participation_type"] = np.select(
         [
-            person_demo["coverage_notes"].eq("full_year_all_rounds_11"),
+            person_demo["coverage_notes"].str.startswith(
+                "full_year_all_rounds", na=False
+            ),
             person_demo["coverage_notes"].eq("not_in_any_round"),
             person_demo["coverage_notes"].str.contains("death", na=False),
             person_demo["coverage_notes"].str.contains("stop", na=False),
@@ -942,6 +995,35 @@ def build(
         "features (AFRDPM42, DLAYPM42, RACETHX, chronic flags) NOT included "
         "here — add at RF-modeling step."
     )
+
+    # Drop persons with excluded disposition codes in any round before
+    # denom/adherence math (death, institutionalization, FT military 12,
+    # student-away 13, ineligible, etc.).
+    person = person.drop_duplicates("DUPERSID").copy()
+    excl_mask = has_excluded_pstats(person)
+    n_excl_persons = int(excl_mask.sum())
+    excluded_ids = set(person.loc[excl_mask, "DUPERSID"].astype(str))
+    before_p_excl, before_gm_excl = person["DUPERSID"].nunique(), len(gm)
+    person = person.loc[~excl_mask].copy()
+    gm = gm[~gm["DUPERSID"].astype(str).isin(excluded_ids)].copy()
+    log.add(StageEntry(
+        "drop_excluded_pstats",
+        rows_in=before_gm_excl,
+        rows_out=len(gm),
+        patients_in=before_p_excl,
+        patients_out=gm["DUPERSID"].nunique(),
+        detail=(
+            f"Dropped persons with any PSTATS31/42/53 in {sorted(EXCLUDED_PSTATS)} "
+            f"({n_excl_persons} person-file rows; "
+            f"{before_gm_excl - len(gm)} person-drug rows removed)."
+        ),
+    ))
+    log.decide(
+        "Excluded PSTATS (any round): "
+        f"{sorted(EXCLUDED_PSTATS)}. These persons are removed from the "
+        "chronic-drug modeling cohort before BEGRF/ENDRF denominator math."
+    )
+
     before, before_p = len(gm), gm["DUPERSID"].nunique()
     gm = gm.merge(person, on="DUPERSID", how="left", validate="many_to_one")
     gm = normalize_age_column(gm, year)

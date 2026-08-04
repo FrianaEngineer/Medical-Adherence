@@ -146,6 +146,66 @@ def test_full_year_all_rounds_11_gets_365_days():
     assert not row["r53_nonresponse"]
 
 
+def test_pstats_12_full_year_uses_reference_window():
+    """PSTATS=12 is FT military out-of-scope for national estimates, but
+    Table 8 still assigns a full BEGRF/ENDRF window (same as code 11) and
+    skips no instrument sections — denom must not be zeroed.
+    """
+    # Mirrors DUPERSID 2791970102 in h251 (2023): 12/12/12 with round dates
+    # spanning the calendar year.
+    person = pd.DataFrame([_person_row(
+        "2791970102", (12, 12, 12),
+        [(9, 2022), (2, 2023), (7, 2023)],
+        [(2, 2023), (7, 2023), (12, 2023)],
+    )])
+    ref = compute_reference_days(person, 2023)
+    row = ref.iloc[0]
+    assert row["total_days_supply"] == 365
+    assert row["participation_type"] == "full_year"
+    assert row["coverage_notes"] == "full_year_all_rounds_12"
+
+
+def test_pstats_12_mixed_with_11_still_counts():
+    person = pd.DataFrame([_person_row(
+        "P1", (12, 11, 11),
+        [(1, 2023), (5, 2023), (9, 2023)],
+        [(4, 2023), (8, 2023), (12, 2023)],
+    )])
+    ref = compute_reference_days(person, 2023)
+    assert ref.iloc[0]["total_days_supply"] == 365
+
+
+def test_gap_round_unions_begrf_endrf_windows():
+    """Skipped middle round must not invent days between flanking windows."""
+    person = pd.DataFrame([_person_row(
+        "P1", (11, -1, 11),
+        [(1, 2023), (-1, -1), (9, 2023)],
+        [(4, 2023), (-1, -1), (12, 2023)],
+    )])
+    ref = compute_reference_days(person, 2023)
+    # Jan1–Apr30 = 120; Sep1–Dec31 = 122
+    assert ref.iloc[0]["total_days_supply"] == 242
+
+
+def test_has_excluded_pstats_any_round():
+    from clean_meps import has_excluded_pstats, EXCLUDED_PSTATS
+
+    person = pd.DataFrame([
+        _person_row("keep", (11, 11, 11),
+                    [(1, 2023), (5, 2023), (9, 2023)],
+                    [(4, 2023), (8, 2023), (12, 2023)]),
+        _person_row("drop31", (11, 31, -1),
+                    [(1, 2023), (5, 2023), (-1, -1)],
+                    [(4, 2023), (6, 2023), (-1, -1)]),
+        _person_row("drop12", (12, 12, 12),
+                    [(1, 2023), (5, 2023), (9, 2023)],
+                    [(4, 2023), (8, 2023), (12, 2023)]),
+    ])
+    mask = has_excluded_pstats(person)
+    assert set(person.loc[mask, "DUPERSID"]) == {"drop31", "drop12"}
+    assert 31 in EXCLUDED_PSTATS and 12 in EXCLUDED_PSTATS
+
+
 def test_death_mid_year_gives_shortened_window():
     # PSTATS 31 == 31 means the person died during round 1 (per h251doc).
     person = pd.DataFrame([_person_row(
