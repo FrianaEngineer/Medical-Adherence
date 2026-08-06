@@ -35,7 +35,7 @@ def _rx_row(dupersid, drugidx, rxrecidx, linkidx, days=30, name="DRUG_A"):
     return {
         "DUPERSID": dupersid, "DRUGIDX": drugidx, "RXRECIDX": rxrecidx,
         "LINKIDX": linkidx, "RXDAYSUP": days, "RXNAME": name,
-        "RXBEGYRX": 2023, "RXBEGMM": 3,
+        "RXDRGNAM": name, "RXBEGYRX": 2023, "RXBEGMM": 3,
     }
 
 

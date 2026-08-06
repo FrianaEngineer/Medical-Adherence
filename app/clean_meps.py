@@ -539,9 +539,32 @@ def _rx_cols(year: int) -> list[str]:
     yy = f"{year % 100:02d}"
     return [
         "DUPERSID", "DRUGIDX", "LINKIDX", "RXRECIDX", "RXDAYSUP",
-        "RXNAME", "RXBEGYRX", "RXBEGMM", "RXNDC", "TC1", "TC1S1",
+        "RXNAME", "RXDRGNAM", "RXBEGYRX", "RXBEGMM", "RXNDC", "TC1", "TC1S1",
         f"RXXP{yy}X", f"RXSF{yy}X",
     ]
+
+
+def _normalize_rxdrgname(rxdrgnam: pd.Series, rxname: pd.Series | None = None) -> pd.Series:
+    """Clean MEPS ``RXDRGNAM`` into a modeling ``RXDRGNAME``.
+
+    Sentinels (-1/-7/-8/-15 and blanks) are treated as missing. When a fallback
+    ``RXNAME`` series is provided, missing values are filled from it so every
+    fill still has a drug label for one-hot encoding.
+    """
+    raw = rxdrgnam.copy()
+    num = pd.to_numeric(raw, errors="coerce")
+    as_str = raw.astype(str).str.strip()
+    bad = (
+        num.notna() & (num < 0)
+    ) | as_str.str.upper().isin(
+        {"-1", "-7", "-8", "-15", "NAN", "NONE", "", "<NA>"}
+    )
+    out = as_str.where(~bad)
+    out = out.replace({"nan": pd.NA, "None": pd.NA, "<NA>": pd.NA})
+    if rxname is not None:
+        fb = rxname.astype(str).str.strip()
+        out = out.fillna(fb)
+    return out.astype("string")
 
 
 def _drug_start_days_in_year(
@@ -882,6 +905,7 @@ def build(
         RXXP=(xp_col, "mean"),
         RXSF=(sf_col, "mean"),
         RXNAME=("RXNAME", "first"),
+        RXDRGNAM=("RXDRGNAM", "first"),
         RXNDC=("RXNDC", "first"),
         RXBEGYRX=("RXBEGYRX", "min"),
         first_month=("_valid_month", "min"),
@@ -891,6 +915,8 @@ def build(
         primary_ICD10CDX_LABEL=("ICD10CDX_LABEL", "first"),
     ).reset_index()
     gm = gm.rename(columns={"RXXP": xp_col, "RXSF": sf_col})
+    gm["RXDRGNAME"] = _normalize_rxdrgname(gm["RXDRGNAM"], gm["RXNAME"])
+    gm = gm.drop(columns=["RXDRGNAM"])
     # Denominator adjustment for drugs first prescribed mid-year: caps at (Dec 31
     # - first-of-first-month + 1); falls back to 365 when start-month is missing
     # or start-year is not this year.
