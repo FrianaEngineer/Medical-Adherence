@@ -30,9 +30,10 @@ or persist to ``decisions_log.md``.
 ``export_merged_all_years()`` stacks each year's chronic-drug export into
 ``output/all_years/tables/`` (also refreshed at the end of ``run_exports``).
 
-Column set is the lean set the notebooks currently emit — no scope creep to
-the Data Reference Guide's fuller Q3 feature list. Add those at the model
-step, not here.
+Column set is the lean notebook export plus paper enrichments used by the
+app: ``MARRYXX`` / ``REGIONXX`` (newest→oldest round backfill), ``EDUCYR``,
+``RACETHX``, and medication_freq / dose / units / freq_bin from Rx fills.
+Sidebar filters use the demography fields; medication_* feed the models tab.
 """
 
 from __future__ import annotations
@@ -204,6 +205,19 @@ ALL_YEARS_XLSX = "new_grouped_merge_df_chronic_drugs.xlsx"
 ALL_YEARS_FILTER_OPTIONS = "filter_options.json"
 BRIDGE_PARQUET = "patient_drug_condition_bridge.parquet"
 ALL_YEARS_BRIDGE_PARQUET = "patient_drug_condition_bridge.parquet"
+MODEL_DF_ALL_YEARS = "model_df_all_years.parquet"
+
+# Paper / Model-4 enrichments (sidebar demos + model medication features).
+MAX_PILLS_PER_DAY = 10
+PAPER_DEMO_COLS = ["MARRYXX", "REGIONXX", "EDUCYR", "RACETHX"]
+PAPER_MED_COLS = [
+    "medication_freq",
+    "medication_dose",
+    "medication_dose_unit",
+    "medication_qty_unit",
+    "medication_freq_bin",
+]
+PAPER_ENRICH_COLS = PAPER_DEMO_COLS + PAPER_MED_COLS
 
 
 def _harmonize_year_columns(df: pd.DataFrame, year: int) -> pd.DataFrame:
@@ -244,6 +258,9 @@ def _stringify_age_columns(df: pd.DataFrame) -> pd.DataFrame:
                 return "unknown" if s.lower() in {"unknown", "-1"} else s
 
         out[col] = out[col].map(_one).astype("string")
+    for col in ("medication_dose_unit", "medication_qty_unit", "medication_freq_bin"):
+        if col in out.columns:
+            out[col] = out[col].astype("string")
     return out
 
 
@@ -309,6 +326,19 @@ def _write_all_years_filter_options(merged: pd.DataFrame, tables_dir: Path) -> P
         n_single = int((vc == 1).sum())
         n_cond = int(len(vc))
 
+    def _valid_codes(col: str) -> list[int]:
+        if col not in merged.columns:
+            return []
+        s = pd.to_numeric(merged[col], errors="coerce")
+        return sorted(int(v) for v in s.dropna().unique() if v >= 0)
+
+    educ = (
+        pd.to_numeric(merged["EDUCYR"], errors="coerce")
+        if "EDUCYR" in merged.columns
+        else pd.Series(dtype=float)
+    )
+    educ_ok = educ[educ >= 0]
+
     payload = {
         "years": sorted(int(y) for y in merged["YEAR"].dropna().unique()) if "YEAR" in merged.columns else [],
         "n_rows": int(len(merged)),
@@ -321,6 +351,15 @@ def _write_all_years_filter_options(merged: pd.DataFrame, tables_dir: Path) -> P
         "has_sex": "SEX" in merged.columns,
         "has_povcat": "POVCAT" in merged.columns,
         "has_inscov": "INSCOV" in merged.columns,
+        "has_marryxx": "MARRYXX" in merged.columns,
+        "has_regionxx": "REGIONXX" in merged.columns,
+        "has_educyr": "EDUCYR" in merged.columns,
+        "has_racethx": "RACETHX" in merged.columns,
+        "marry_codes": _valid_codes("MARRYXX"),
+        "region_codes": _valid_codes("REGIONXX"),
+        "racethx_codes": _valid_codes("RACETHX"),
+        "educyr_min": int(educ_ok.min()) if len(educ_ok) else 0,
+        "educyr_max": int(educ_ok.max()) if len(educ_ok) else 17,
     }
     path = tables_dir / ALL_YEARS_FILTER_OPTIONS
     path.write_text(json.dumps(payload, indent=2))
@@ -540,8 +579,202 @@ def _rx_cols(year: int) -> list[str]:
     return [
         "DUPERSID", "DRUGIDX", "LINKIDX", "RXRECIDX", "RXDAYSUP",
         "RXNAME", "RXDRGNAM", "RXBEGYRX", "RXBEGMM", "RXNDC", "TC1", "TC1S1",
+        "RXSTRENG", "RXSTRUNT", "RXQUANTY", "RXFORM",
         f"RXXP{yy}X", f"RXSF{yy}X",
     ]
+
+
+def _backfill_newest_to_oldest(
+    df: pd.DataFrame, cols_newest_to_oldest: list[str], out_name: str
+) -> pd.DataFrame:
+    """First non-negative value walking newest → oldest rounds."""
+    present = [c for c in cols_newest_to_oldest if c in df.columns]
+    if not present:
+        df[out_name] = pd.NA
+        return df
+    series = [pd.to_numeric(df[c], errors="coerce") for c in present]
+    out = series[0].copy()
+    for s in series[1:]:
+        need = out.isna() | (out < 0)
+        out = out.where(~need, s)
+    df[out_name] = out
+    return df
+
+
+def _clean_med_unit(s: pd.Series) -> pd.Series:
+    out = s.astype(str).str.strip()
+    bad = out.str.lower().isin({"-15", "nan", "none", "", "<na>"})
+    return out.where(~bad)
+
+
+def _medication_freq_bin(f) -> object:
+    if pd.isna(f):
+        return pd.NA
+    if f <= 1.25:
+        return "1x_daily"
+    if f <= 2.25:
+        return "2x_daily"
+    if f <= 3.25:
+        return "3x_daily"
+    return "4x_plus"
+
+
+def _first_non_null(s: pd.Series):
+    s = s.dropna()
+    return s.iloc[0] if len(s) else pd.NA
+
+
+def _marry_region_round_cols(year: int) -> tuple[list[str], list[str]]:
+    yy = f"{year % 100:02d}"
+    marry = [f"MARRY{yy}X", "MARRY53X", "MARRY42X", "MARRY31X"]
+    region = [f"REGION{yy}", f"REGION{yy}X", "REGION53", "REGION42", "REGION31"]
+    return marry, region
+
+
+def _attach_demo_enrichments(person: pd.DataFrame, year: int) -> pd.DataFrame:
+    """Create MARRYXX / REGIONXX (backfilled) and coerce EDUCYR / RACETHX."""
+    out = person.copy()
+    marry_cols, region_cols = _marry_region_round_cols(year)
+    out = _backfill_newest_to_oldest(out, marry_cols, "MARRYXX")
+    out = _backfill_newest_to_oldest(out, region_cols, "REGIONXX")
+    for c in PAPER_DEMO_COLS:
+        if c in out.columns:
+            out[c] = pd.to_numeric(out[c], errors="coerce")
+        else:
+            out[c] = pd.NA
+    drop_rounds = [c for c in marry_cols + region_cols if c in out.columns]
+    if drop_rounds:
+        out = out.drop(columns=drop_rounds)
+    return out
+
+
+def _medication_features_from_fills(fills: pd.DataFrame) -> pd.DataFrame:
+    """Person–drug medication_freq / dose / units from fill-level Rx fields."""
+    needed = {"DUPERSID", "DRUGIDX", "RXSTRENG", "RXSTRUNT", "RXQUANTY", "RXFORM", "RXDAYSUP"}
+    if not needed.issubset(fills.columns):
+        return pd.DataFrame(
+            columns=["DUPERSID", "DRUGIDX", *PAPER_MED_COLS]
+        )
+
+    dose = pd.to_numeric(fills["RXSTRENG"], errors="coerce")
+    qty = pd.to_numeric(fills["RXQUANTY"], errors="coerce")
+    days = pd.to_numeric(fills["RXDAYSUP"], errors="coerce")
+    dose = dose.where(dose >= 0)
+    qty_ok = qty.where(qty > 0)
+    days_ok = days.where((days > 0) & (days < 990))
+    freq = qty_ok / days_ok
+    freq = freq.where((freq > 0) & (freq <= MAX_PILLS_PER_DAY))
+
+    tmp = fills[["DUPERSID", "DRUGIDX"]].copy()
+    tmp["medication_dose"] = dose
+    tmp["medication_dose_unit"] = _clean_med_unit(fills["RXSTRUNT"])
+    tmp["medication_freq"] = freq
+    tmp["medication_qty_unit"] = _clean_med_unit(fills["RXFORM"])
+
+    med = (
+        tmp.groupby(["DUPERSID", "DRUGIDX"], as_index=False)
+        .agg(
+            medication_freq=("medication_freq", "mean"),
+            medication_dose=("medication_dose", "mean"),
+            medication_dose_unit=("medication_dose_unit", _first_non_null),
+            medication_qty_unit=("medication_qty_unit", _first_non_null),
+        )
+    )
+    med["medication_freq_bin"] = med["medication_freq"].map(_medication_freq_bin)
+    return med
+
+
+def _person_header(path: Path) -> list[str]:
+    """First-row Excel header only (avoid full-sheet / nrows=0 calamine cost)."""
+    from openpyxl import load_workbook
+
+    wb = load_workbook(path, read_only=True, data_only=False)
+    try:
+        row = next(wb.active.iter_rows(min_row=1, max_row=1, values_only=True))
+    finally:
+        wb.close()
+    return [str(c) for c in row if c is not None]
+
+
+def load_demo_extra_year(
+    year: int, meps_dir: str | Path | None = None
+) -> pd.DataFrame:
+    """MARRYXX / REGIONXX (backfilled) + EDUCYR + RACETHX from that year's person file."""
+    dir_ = Path(meps_dir) if meps_dir is not None else resolve_meps_dir()
+    yy = f"{year % 100:02d}"
+    person_path = dir_ / YEAR_FILES[year]["person"]
+    header = _person_header(person_path)
+
+    marry_pref = [f"MARRY{yy}X", "MARRY53X", "MARRY42X", "MARRY31X"]
+    region_pref = [f"REGION{yy}", f"REGION{yy}X", "REGION53", "REGION42", "REGION31"]
+    marry_cols = [c for c in marry_pref if c in header]
+    region_cols = [c for c in region_pref if c in header]
+    base = ["DUPERSID"]
+    for c in ("EDUCYR", "RACETHX"):
+        if c in header:
+            base.append(c)
+    usecols = list(dict.fromkeys(base + marry_cols + region_cols))
+
+    demo = pd.read_excel(person_path, engine="calamine", usecols=usecols)
+    demo = demo.drop_duplicates("DUPERSID").copy()
+    demo = _backfill_newest_to_oldest(demo, marry_cols, "MARRYXX")
+    demo = _backfill_newest_to_oldest(demo, region_cols, "REGIONXX")
+    for c in PAPER_DEMO_COLS:
+        if c in demo.columns:
+            demo[c] = pd.to_numeric(demo[c], errors="coerce")
+        else:
+            demo[c] = pd.NA
+    demo["YEAR"] = year
+    return demo[["DUPERSID", "YEAR", *PAPER_DEMO_COLS]]
+
+
+def load_med_extra_year(
+    year: int, meps_dir: str | Path | None = None
+) -> pd.DataFrame:
+    """Person-level medication freq/dose/units from that year's Rx file (for model_df)."""
+    dir_ = Path(meps_dir) if meps_dir is not None else resolve_meps_dir()
+    rx_path = dir_ / YEAR_FILES[year]["rx"]
+    rx_cols = [
+        "DUPERSID", "DRUGIDX", "RXNAME",
+        "RXSTRENG", "RXSTRUNT", "RXQUANTY", "RXFORM", "RXDAYSUP",
+    ]
+    rx = pd.read_excel(rx_path, engine="calamine", usecols=rx_cols)
+
+    dose = pd.to_numeric(rx["RXSTRENG"], errors="coerce")
+    qty = pd.to_numeric(rx["RXQUANTY"], errors="coerce")
+    days = pd.to_numeric(rx["RXDAYSUP"], errors="coerce")
+    dose = dose.where(dose >= 0)
+    qty_ok = qty.where(qty > 0)
+    days_ok = days.where((days > 0) & (days < 990))
+    freq = qty_ok / days_ok
+    freq = freq.where((freq > 0) & (freq <= MAX_PILLS_PER_DAY))
+
+    rx = rx.copy()
+    rx["medication_dose"] = dose
+    rx["medication_dose_unit"] = _clean_med_unit(rx["RXSTRUNT"])
+    rx["medication_freq"] = freq
+    rx["medication_qty_unit"] = _clean_med_unit(rx["RXFORM"])
+
+    med_by_drug = (
+        rx.groupby(["DUPERSID", "RXNAME"], as_index=False)
+        .agg(
+            medication_freq=("medication_freq", "mean"),
+            medication_dose=("medication_dose", "mean"),
+            medication_dose_unit=("medication_dose_unit", _first_non_null),
+            medication_qty_unit=("medication_qty_unit", _first_non_null),
+        )
+    )
+    med_by_person = (
+        med_by_drug.groupby("DUPERSID", as_index=False)
+        .agg(
+            medication_freq=("medication_freq", "mean"),
+            medication_dose=("medication_dose", "mean"),
+            medication_dose_unit=("medication_dose_unit", _first_non_null),
+            medication_qty_unit=("medication_qty_unit", _first_non_null),
+        )
+    )
+    med_by_person["YEAR"] = year
+    return med_by_person
 
 
 def _normalize_rxdrgname(rxdrgnam: pd.Series, rxname: pd.Series | None = None) -> pd.Series:
@@ -593,9 +826,14 @@ def _drug_start_days_in_year(
 
 def _person_cols(year: int) -> list[str]:
     yy = f"{year % 100:02d}"
+    marry_cols, _region_cols = _marry_region_round_cols(year)
+    # REGION{yy}X is absent in 2020–2023 person files — use year-end REGION{yy}.
+    region_usecols = [f"REGION{yy}", "REGION53", "REGION42", "REGION31"]
     return [
         "DUPERSID", "SEX", f"AGE{yy}X", f"INSCOV{yy}", f"POVCAT{yy}",
-        f"FAMINC{yy}", "RACEV2X",
+        f"FAMINC{yy}", "RACEV2X", "EDUCYR", "RACETHX",
+        *marry_cols,
+        *region_usecols,
         "PSTATS31", "PSTATS42", "PSTATS53",
         "BEGRFM31", "BEGRFY31", "BEGRFM42", "BEGRFY42", "BEGRFM53", "BEGRFY53",
         "ENDRFM31", "ENDRFY31", "ENDRFM42", "ENDRFY42", "ENDRFM53", "ENDRFY53",
@@ -948,6 +1186,12 @@ def build(
     gm["ICD10CDX"] = gm["primary_ICD10CDX"]
     gm["ICD10CDX_LABEL"] = gm["primary_ICD10CDX_LABEL"]
 
+    # Medication pattern features (person–drug grain) for Model-4 / paper enrichments
+    med = _medication_features_from_fills(fills)
+    if not med.empty:
+        gm = gm.drop(columns=[c for c in PAPER_MED_COLS if c in gm.columns], errors="ignore")
+        gm = gm.merge(med, on=["DUPERSID", "DRUGIDX"], how="left")
+
     log.add(StageEntry("groupby_person_drug",
                        rows_in=len(fills), rows_out=len(gm),
                        patients_in=fills["DUPERSID"].nunique(),
@@ -958,7 +1202,9 @@ def build(
                               "chronic ICD (aliased so downstream code that "
                               "reads ICD10CDX keeps working); "
                               "n_chronic_conditions + chronic_conditions list "
-                              "cover the full linkage set."))
+                              "cover the full linkage set; medication_freq / "
+                              "dose / units attached from RXQUANTY/RXDAYSUP / "
+                              "RXSTRENG / RXFORM."))
 
     # -- 7b. Patient-drug × condition bridge (built by link_rx_to_conditions)
     log.add(StageEntry("build_patient_drug_condition_bridge",
@@ -1014,12 +1260,13 @@ def build(
     # -- 9. Load h251, keep lean cols, merge on DUPERSID ---------------
     person = pd.read_excel(dir_ / files["person"], engine="calamine",
                            usecols=_person_cols(year))
+    person = _attach_demo_enrichments(person, year)
     log.decide(
         f"Person-level columns pulled from {files['person']}: AGE{yy}X, "
-        f"SEX, RACEV2X, INSCOV{yy}, POVCAT{yy}, FAMINC{yy}, plus "
-        "PSTATS/BEGRF/ENDRF for reference-days computation. Guide-spec "
-        "features (AFRDPM42, DLAYPM42, RACETHX, chronic flags) NOT included "
-        "here — add at RF-modeling step."
+        f"SEX, RACEV2X, RACETHX, EDUCYR, MARRYXX/REGIONXX (newest→oldest "
+        f"round backfill), INSCOV{yy}, POVCAT{yy}, FAMINC{yy}, plus "
+        "PSTATS/BEGRF/ENDRF for reference-days computation. Medication "
+        "freq/dose/units come from the Rx file at person–drug grain."
     )
 
     # Drop persons with excluded disposition codes in any round before
@@ -1111,11 +1358,14 @@ def build(
     )
 
     # Drop round-detail cols the caller doesn't need
+    marry_rounds, region_rounds = _marry_region_round_cols(year)
     drop_cols = [c for c in [
         "PSTATS31", "PSTATS42", "PSTATS53",
         "BEGRFM31", "BEGRFY31", "ENDRFM31", "ENDRFY31",
         "BEGRFM42", "BEGRFY42", "ENDRFM42", "ENDRFY42",
         "BEGRFM53", "BEGRFY53", "ENDRFM53", "ENDRFY53",
+        *marry_rounds,
+        *region_rounds,
     ] if c in gm.columns]
     if drop_cols:
         gm = gm.drop(columns=drop_cols)
@@ -1593,6 +1843,122 @@ def run_exports(year: int, meps_dir: str | Path | None = None, write_decisions_l
         ctx.info(f"all-years merge -> {merged_path}")
 
 
+def enrich_model_df_all_years(meps_dir: str | Path | None = None) -> Path | None:
+    """Attach paper enrichments onto ``model_df_all_years.parquet`` (Step R).
+
+    Adds ``MARRYXX``, ``REGIONXX``, ``EDUCYR``, ``RACETHX``, and medication_*
+    columns in place. No-op (returns None) when the panel parquet is missing.
+    """
+    import time
+
+    dir_ = Path(meps_dir) if meps_dir is not None else resolve_meps_dir()
+    tables_dir, _ = all_years_output_dirs()
+    panel_path = tables_dir / MODEL_DF_ALL_YEARS
+    if not panel_path.exists():
+        print(f"[enrich] skip: {panel_path} not found")
+        return None
+
+    model_df = pd.read_parquet(panel_path)
+    n_before = len(model_df)
+    model_df = model_df.drop(columns=PAPER_ENRICH_COLS, errors="ignore")
+
+    demo_parts: list[pd.DataFrame] = []
+    med_parts: list[pd.DataFrame] = []
+    for y in sorted(YEAR_FILES):
+        t0 = time.perf_counter()
+        print(f"[enrich] [{y}] loading person + Rx enrichments …")
+        demo_parts.append(load_demo_extra_year(y, meps_dir=dir_))
+        med_parts.append(load_med_extra_year(y, meps_dir=dir_))
+        print(f"[enrich] [{y}] done in {time.perf_counter() - t0:.1f}s")
+
+    demo_all = pd.concat(demo_parts, ignore_index=True)
+    med_all = pd.concat(med_parts, ignore_index=True)
+    med_all["medication_freq_bin"] = med_all["medication_freq"].map(_medication_freq_bin)
+
+    model_df = model_df.merge(demo_all, on=["DUPERSID", "YEAR"], how="left")
+    model_df = model_df.merge(med_all, on=["DUPERSID", "YEAR"], how="left")
+
+    if len(model_df) != n_before:
+        raise RuntimeError(
+            f"row count changed after enrich: {n_before} → {len(model_df)}"
+        )
+    if int(model_df.duplicated(["DUPERSID", "YEAR"]).sum()) != 0:
+        raise RuntimeError("duplicate (DUPERSID, YEAR) after enrich")
+
+    model_df = _stringify_age_columns(model_df)
+    model_df.to_parquet(panel_path, index=False)
+    print(f"[enrich] wrote {panel_path} ({len(model_df):,} rows, {model_df.shape[1]} cols)")
+    for c in PAPER_ENRICH_COLS:
+        nn = int(model_df[c].notna().sum())
+        print(f"[enrich]   {c}: {nn:,} / {len(model_df):,} ({100 * nn / len(model_df):.1f}%)")
+    return panel_path
+
+
+def enrich_year_chronic_frames(meps_dir: str | Path | None = None) -> list[Path]:
+    """Patch per-year chronic-drug parquets with demos + person–drug medication_*.
+
+    Use when year exports predate the paper enrichments so Streamlit sidebar
+    filters work without a full ``run_exports`` rebuild.
+    """
+    import time
+
+    dir_ = Path(meps_dir) if meps_dir is not None else resolve_meps_dir()
+    written: list[Path] = []
+
+    for year in sorted(YEAR_FILES):
+        tables = output_dirs(year)[0]
+        pq = tables / "new_grouped_merge_df_chronic_drugs.parquet"
+        df = _read_year_chronic_frame(year)
+        if df is None:
+            print(f"[enrich-years] skip {year}: no chronic-drug export")
+            continue
+
+        t0 = time.perf_counter()
+        print(f"[enrich-years] [{year}] attaching demos + medication_* …")
+        n_before = len(df)
+        df = df.drop(columns=PAPER_ENRICH_COLS, errors="ignore")
+
+        demo = load_demo_extra_year(year, meps_dir=dir_).drop(columns=["YEAR"])
+        df = df.merge(demo, on="DUPERSID", how="left")
+
+        # Person–drug medication features from Rx (DRUGIDX grain)
+        rx_path = dir_ / YEAR_FILES[year]["rx"]
+        rx = pd.read_excel(
+            rx_path,
+            engine="calamine",
+            usecols=[
+                "DUPERSID", "DRUGIDX", "RXSTRENG", "RXSTRUNT",
+                "RXQUANTY", "RXFORM", "RXDAYSUP",
+            ],
+        )
+        med = _medication_features_from_fills(rx)
+        if not med.empty and "DRUGIDX" in df.columns:
+            df = df.merge(med, on=["DUPERSID", "DRUGIDX"], how="left")
+
+        if len(df) != n_before:
+            raise RuntimeError(
+                f"{year}: row count changed after enrich: {n_before} → {len(df)}"
+            )
+
+        tables.mkdir(parents=True, exist_ok=True)
+        _stringify_age_columns(df).to_parquet(pq, index=False)
+        written.append(pq)
+        print(
+            f"[enrich-years] [{year}] wrote {pq.name} "
+            f"({len(df):,} rows) in {time.perf_counter() - t0:.1f}s"
+        )
+
+    return written
+
+
+def enrich_paper_columns(meps_dir: str | Path | None = None) -> dict[str, Path | None]:
+    """Enrich year frames, all-years cache, and model_df with paper columns."""
+    enrich_year_chronic_frames(meps_dir=meps_dir)
+    merged = export_merged_all_years(meps_dir=meps_dir)
+    model_path = enrich_model_df_all_years(meps_dir=meps_dir)
+    return {"all_years": merged, "model_df": model_path}
+
+
 # ---------------------------------------------------------------------------
 # Legacy helper (kept for backwards compatibility with any code that imported
 # clean_h248a from this module).
@@ -1646,6 +2012,15 @@ def _cli(argv: list[str] | None = None) -> int:
     p_export.add_argument("--year", type=int, required=True, choices=sorted(YEAR_FILES))
     p_export.add_argument("--meps-dir", default=None)
 
+    p_enrich = sub.add_parser(
+        "enrich-paper-cols",
+        help=(
+            "Attach MARRYXX/REGIONXX/EDUCYR/RACETHX + medication_* onto year "
+            "chronic-drug caches, all-years merge, and model_df_all_years"
+        ),
+    )
+    p_enrich.add_argument("--meps-dir", default=None)
+
     args = parser.parse_args(argv)
 
     if args.cmd == "cache-all-years":
@@ -1655,6 +2030,11 @@ def _cli(argv: list[str] | None = None) -> int:
     if args.cmd == "export":
         run_exports(args.year, meps_dir=args.meps_dir)
         return 0
+
+    if args.cmd == "enrich-paper-cols":
+        out = enrich_paper_columns(meps_dir=args.meps_dir)
+        ok = out.get("all_years") is not None
+        return 0 if ok else 1
 
     return 1
 
