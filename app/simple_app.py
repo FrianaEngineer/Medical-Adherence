@@ -1312,7 +1312,6 @@ def compute_models_bundle(_mtime: float) -> dict | None:
     y_train = train["is_adherent"].astype(int)
     y_test = test["is_adherent"].astype(int)
     rows = []
-    ep_payload: dict | None = None
 
     for name, cols in feature_groups.items():
         cols = list(dict.fromkeys(cols))
@@ -1323,33 +1322,58 @@ def compute_models_bundle(_mtime: float) -> dict | None:
         clf = XGBClassifier(**XGB_FIXED_PARAMS)
         clf.fit(X_tr, y_train)
         proba = clf.predict_proba(X_te)[:, 1]
-        pred = (proba >= 0.5).astype(int)
         auc = float(roc_auc_score(y_test, proba))
         rows.append(
             {"model": name, "n_features": int(X_tr.shape[1]), "roc_auc_2023": auc}
         )
-        if name == "everything + prior":
-            cm = confusion_matrix(y_test, pred, labels=[0, 1])
-            fpr, tpr, _ = roc_curve(y_test, proba)
-            gain = (
-                pd.Series(clf.feature_importances_, index=X_tr.columns)
-                .sort_values(ascending=False)
-                .head(20)
-            )
-            ep_payload = {
-                "auc": auc,
-                "y_test": y_test.to_numpy(),
-                "y_pred": pred,
-                "y_proba": proba,
-                "cm": cm,
-                "fpr": fpr,
-                "tpr": tpr,
-                "gain_features": gain.index.tolist(),
-                "gain_values": gain.to_numpy(),
-                "n_train": len(train),
-                "n_test": len(test),
-                "n_features": int(X_tr.shape[1]),
-            }
+
+    # Everything + prior plots: all-years person-level holdout (not 2023-only).
+    # 20% of unique DUPERSIDs → test; all their person-year rows go to test.
+    ep_cols = list(dict.fromkeys(everything_prior))
+    rng = np.random.default_rng(42)
+    people = lagged["DUPERSID"].astype(str).unique()
+    n_test_people = max(1, int(round(0.2 * len(people))))
+    test_ids = set(rng.choice(people, size=n_test_people, replace=False))
+    train_ay = lagged[~lagged["DUPERSID"].astype(str).isin(test_ids)].copy()
+    test_ay = lagged[lagged["DUPERSID"].astype(str).isin(test_ids)].copy()
+    assert len(set(train_ay["DUPERSID"]) & set(test_ay["DUPERSID"])) == 0
+
+    y_tr_ay = train_ay["is_adherent"].astype(int)
+    y_te_ay = test_ay["is_adherent"].astype(int)
+    X_tr_ay = _prep_xgb_matrix(train_ay, ep_cols)
+    X_te_ay = _prep_xgb_matrix(test_ay, ep_cols).reindex(
+        columns=X_tr_ay.columns, fill_value=-999.0
+    )
+    clf_ay = XGBClassifier(**XGB_FIXED_PARAMS)
+    clf_ay.fit(X_tr_ay, y_tr_ay)
+    proba_ay = clf_ay.predict_proba(X_te_ay)[:, 1]
+    pred_ay = (proba_ay >= 0.5).astype(int)
+    auc_ay = float(roc_auc_score(y_te_ay, proba_ay))
+    cm_ay = confusion_matrix(y_te_ay, pred_ay, labels=[0, 1])
+    fpr_ay, tpr_ay, _ = roc_curve(y_te_ay, proba_ay)
+    gain_ay = (
+        pd.Series(clf_ay.feature_importances_, index=X_tr_ay.columns)
+        .sort_values(ascending=False)
+        .head(20)
+    )
+    ep_payload = {
+        "auc": auc_ay,
+        "y_test": y_te_ay.to_numpy(),
+        "y_pred": pred_ay,
+        "y_proba": proba_ay,
+        "cm": cm_ay,
+        "fpr": fpr_ay,
+        "tpr": tpr_ay,
+        "gain_features": gain_ay.index.tolist(),
+        "gain_values": gain_ay.to_numpy(),
+        "n_train": len(train_ay),
+        "n_test": len(test_ay),
+        "n_features": int(X_tr_ay.shape[1]),
+        "n_train_people": int(train_ay["DUPERSID"].nunique()),
+        "n_test_people": int(test_ay["DUPERSID"].nunique()),
+        "years": sorted(int(y) for y in lagged["YEAR"].dropna().unique()),
+        "split": "all_years_person",
+    }
 
     return {
         "n_pairs": len(pairs),
@@ -1644,7 +1668,13 @@ def confusion_matrix_figure(cm: np.ndarray, *, title: str, auc: float) -> go.Fig
     return fig
 
 
-def roc_curve_figure(fpr: np.ndarray, tpr: np.ndarray, *, auc: float) -> go.Figure:
+def roc_curve_figure(
+    fpr: np.ndarray,
+    tpr: np.ndarray,
+    *,
+    auc: float,
+    title: str = "Everything + prior — ROC curve (all-years holdout)",
+) -> go.Figure:
     fig = go.Figure()
     fig.add_trace(
         go.Scatter(
@@ -1665,7 +1695,7 @@ def roc_curve_figure(fpr: np.ndarray, tpr: np.ndarray, *, auc: float) -> go.Figu
         )
     )
     fig.update_layout(
-        title="Everything + prior — ROC curve (2023 holdout)",
+        title=title,
         xaxis_title="False positive rate",
         yaxis_title="True positive rate",
         xaxis=dict(range=[0, 1]),
@@ -2357,8 +2387,9 @@ with tab_viz:
 with tab_models:
     st.header("Models")
     st.caption(
-        "Correlation, AUC / feature importance, and interactive prediction "
-        "(train 2021–2022 → test 2023; everything + prior recipe)."
+        "Correlation, AUC / feature importance, and interactive prediction. "
+        "Feature-group table uses train 2021–2022 → test 2023; "
+        "everything + prior matrix/curve uses an all-years person-level holdout."
     )
 
     model_path = all_years_output_dirs()[0] / MODEL_DF_ALL_YEARS
@@ -2407,17 +2438,30 @@ with tab_models:
                 xgb_table["roc_auc_2023"] = xgb_table["roc_auc_2023"].map(
                     lambda v: f"{v:.4f}"
                 )
+                st.caption(
+                    "Feature-group ROC-AUC below is the 2023 time-holdout "
+                    "(train 2021–2022 → test 2023)."
+                )
                 st.dataframe(xgb_table, use_container_width=True, hide_index=True)
 
                 ep = bundle["everything_prior"]
-                st.subheader("Everything + prior — 2023 holdout")
+                st.subheader("Everything + prior — all-years holdout")
                 if ep is None:
                     st.info("Everything + prior model did not produce plot outputs.")
                 else:
+                    years_lbl = (
+                        "–".join(str(y) for y in ep.get("years", []))
+                        if ep.get("years")
+                        else "all years"
+                    )
                     st.caption(
+                        f"Person-level 80/20 split on the lagged panel "
+                        f"({years_lbl}). "
                         f"Features: {ep['n_features']:,} · "
-                        f"train rows: {ep['n_train']:,} · "
-                        f"test rows: {ep['n_test']:,} · "
+                        f"train {ep['n_train']:,} rows "
+                        f"({ep.get('n_train_people', 0):,} people) · "
+                        f"test {ep['n_test']:,} rows "
+                        f"({ep.get('n_test_people', 0):,} people) · "
                         f"ROC-AUC: {ep['auc']:.4f}"
                     )
                     c1, c2 = st.columns(2)
@@ -2425,14 +2469,19 @@ with tab_models:
                         st.plotly_chart(
                             confusion_matrix_figure(
                                 ep["cm"],
-                                title="Everything + prior — confusion matrix",
+                                title="Everything + prior — confusion matrix (all years)",
                                 auc=ep["auc"],
                             ),
                             use_container_width=True,
                         )
                     with c2:
                         st.plotly_chart(
-                            roc_curve_figure(ep["fpr"], ep["tpr"], auc=ep["auc"]),
+                            roc_curve_figure(
+                                ep["fpr"],
+                                ep["tpr"],
+                                auc=ep["auc"],
+                                title="Everything + prior — ROC curve (all years)",
+                            ),
                             use_container_width=True,
                         )
                     st.plotly_chart(
