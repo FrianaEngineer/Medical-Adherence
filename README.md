@@ -116,4 +116,4 @@ Then open in order:
 
 ## Who built this
 
-Friana (Cornell freshman) building the work under mentorship from Dr. Mehak Rafiq, May–August 2026. Project sponsored by Pheroze. The original V9 production-system scaffold from Pheroze is reference only — this repo is Friana's defensible vertical slice, written to be owned and defended in interviews.
+Friana (Cornell freshman) building the work under mentorship from Dr. Mehak Rafiq, May–August 2026. 
