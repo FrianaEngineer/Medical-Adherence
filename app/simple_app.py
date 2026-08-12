@@ -102,6 +102,35 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# Sticky footer visible on every tab; pad main content so nothing sits under it.
+st.markdown(
+    """
+<style>
+  .block-container {
+    padding-bottom: 4.5rem !important;
+  }
+  footer { visibility: hidden; }
+  .app-credit-footer {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 999;
+    padding: 0.55rem 1rem;
+    text-align: center;
+    font-size: 0.82rem;
+    line-height: 1.35;
+    color: #5a6570;
+    background: rgba(255, 255, 255, 0.96);
+    border-top: 1px solid #e6e9ec;
+    pointer-events: none;
+  }
+</style>
+<div class="app-credit-footer">Created by Friana Engineer - Cornell University</div>
+""",
+    unsafe_allow_html=True,
+)
+
 
 # ---------------------------------------------------------------------------
 # Data helpers
@@ -1207,9 +1236,9 @@ XGB_FIXED_PARAMS = dict(
     n_jobs=-1,
     verbosity=0,
 )
+# prior_ratio intentionally omitted from models (binary prior_is_adherent is enough)
 PRIOR_FEATURE_MAP = {
     "is_adherent": "prior_is_adherent",
-    "meps_adherence_ratio": "prior_ratio",
     "n_drugs": "prior_n_drugs",
     "n_conditions": "prior_n_cond",
 }
@@ -1277,7 +1306,7 @@ def compute_models_bundle(_mtime: float) -> dict | None:
         index=order, columns=order
     )
 
-    # --- Step P/Q: prior lag + fixed XGBoost groups ---
+    # --- Step P/Q: prior lag + fixed XGBoost groups (no prior_ratio) ---
     prior = model_df_all[["DUPERSID", "YEAR", *PRIOR_FEATURE_MAP.keys()]].copy()
     prior = prior.rename(columns=PRIOR_FEATURE_MAP)
     prior["YEAR"] += 1
@@ -1286,7 +1315,13 @@ def compute_models_bundle(_mtime: float) -> dict | None:
 
     train = lagged[lagged["YEAR"].isin([2021, 2022])].copy()
     test = lagged[lagged["YEAR"] == 2023].copy()
-    drop_from_x = {"DUPERSID", "YEAR", "is_adherent", "meps_adherence_ratio"}
+    drop_from_x = {
+        "DUPERSID",
+        "YEAR",
+        "is_adherent",
+        "meps_adherence_ratio",
+        "prior_ratio",  # never use even if present from older merges
+    }
     icd_cols = [c for c in lagged.columns if c.startswith("ICD_")]
     demo_cols = [
         c
@@ -1405,7 +1440,13 @@ def get_prediction_model(_mtime: float) -> dict | None:
     lagged = _build_lagged_panel(model_df_all)
     train = lagged[lagged["YEAR"].isin([2021, 2022])].copy()
     test = lagged[lagged["YEAR"] == 2023].copy()
-    drop_from_x = {"DUPERSID", "YEAR", "is_adherent", "meps_adherence_ratio"}
+    drop_from_x = {
+        "DUPERSID",
+        "YEAR",
+        "is_adherent",
+        "meps_adherence_ratio",
+        "prior_ratio",
+    }
     feature_cols = [c for c in lagged.columns if c not in drop_from_x]
 
     X_tr = _prep_xgb_matrix(train, feature_cols)
@@ -1528,7 +1569,6 @@ def build_prediction_features(
     medication_dose: float,
     same_drugs_prior_year: bool,
     prior_is_adherent: bool,
-    prior_ratio: float,
     prior_n_drugs: int,
     prior_n_cond: int,
 ) -> pd.DataFrame:
@@ -1614,11 +1654,9 @@ def build_prediction_features(
     if "n_conditions" in row:
         row["n_conditions"] = float(n_cond)
 
-    # Prior-year block
+    # Prior-year block (no prior_ratio)
     if "prior_is_adherent" in row:
         row["prior_is_adherent"] = 1.0 if prior_is_adherent else 0.0
-    if "prior_ratio" in row:
-        row["prior_ratio"] = float(prior_ratio)
     if "prior_n_drugs" in row:
         if same_drugs_prior_year:
             row["prior_n_drugs"] = float(n_drugs)
@@ -2432,7 +2470,8 @@ with tab_models:
                 st.caption(
                     "Fixed params: n_estimators=300, max_depth=3, learning_rate=0.05, "
                     "subsample=0.8, colsample_bytree=0.8, reg_lambda=5.0. "
-                    "Dropped from X: DUPERSID, YEAR, is_adherent, meps_adherence_ratio."
+                    "Dropped from X: DUPERSID, YEAR, is_adherent, meps_adherence_ratio, "
+                    "prior_ratio."
                 )
                 xgb_table = bundle["xgb_table"].copy()
                 xgb_table["roc_auc_2023"] = xgb_table["roc_auc_2023"].map(
@@ -2576,8 +2615,6 @@ with tab_models:
                     key="pred_prior_adh_yn",
                 )
                 prior_adh = prior_adh_label == "Yes"
-                # Model still uses continuous prior_ratio; map from the binary choice.
-                prior_ratio = 75.0 if prior_adh else 35.0
                 prior_n_cond = max(len(sel_conditions), 1)
                 if same_drugs_flag:
                     st.caption(
@@ -2736,7 +2773,6 @@ with tab_models:
                         medication_dose=float(medication_dose),
                         same_drugs_prior_year=same_drugs_flag,
                         prior_is_adherent=prior_adh,
-                        prior_ratio=float(prior_ratio),
                         prior_n_drugs=int(prior_n_drugs),
                         prior_n_cond=int(prior_n_cond),
                     )
