@@ -21,6 +21,7 @@ import pandas as pd
 import pytest
 
 from clean_meps import (
+    _drug_start_days_in_year,
     apply_adherence_math,
     compute_reference_days,
     link_rx_to_conditions,
@@ -299,6 +300,49 @@ def test_custom_denom_column():
     out = apply_adherence_math(df, denom_col="drug_start_days")
     assert out.iloc[0]["total_valid_days"] == 100
     assert out.iloc[0]["meps_adherence_ratio"] == 50.0
+
+
+# ---------------------------------------------------------------------------
+# _drug_start_days_in_year
+# ---------------------------------------------------------------------------
+
+def test_drug_start_prior_year_is_365():
+    out = _drug_start_days_in_year(
+        2023,
+        pd.Series([2020, 2022]),
+        pd.Series([6, 11]),
+    )
+    assert list(out) == [365, 365]
+
+
+def test_drug_start_same_year_known_month():
+    # July 1 → Dec 31 2023 = 184 days
+    out = _drug_start_days_in_year(
+        2023,
+        pd.Series([2023]),
+        pd.Series([7]),
+    )
+    assert int(out.iloc[0]) == 184
+
+
+def test_drug_start_missing_month_uses_survey_start():
+    # Missing med month, survey started in June → Jun 1 → Dec 31 = 214
+    out = _drug_start_days_in_year(
+        2023,
+        pd.Series([2023, 2023]),
+        pd.Series([-1, np.nan]),
+        survey_start_month=pd.Series([6, 6]),
+    )
+    assert list(out.astype(int)) == [214, 214]
+
+
+def test_drug_start_missing_month_without_survey_stays_365():
+    out = _drug_start_days_in_year(
+        2023,
+        pd.Series([2023]),
+        pd.Series([-8]),
+    )
+    assert int(out.iloc[0]) == 365
 
 
 def test_input_frame_not_mutated():

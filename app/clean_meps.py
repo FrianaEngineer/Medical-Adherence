@@ -804,12 +804,15 @@ def _drug_start_days_in_year(
     year: int,
     first_year: pd.Series,
     first_month: pd.Series,
+    survey_start_month: pd.Series | None = None,
 ) -> pd.Series:
     """Days from a drug's earliest fill start to Dec 31 of ``year``.
 
     - drug started before ``year``  -> 365 (drug active whole year)
     - drug started in ``year`` with a valid month -> (Dec 31 - first-of-month + 1)
-    - drug started in ``year`` but month is missing -> 365 (conservative)
+    - drug started in ``year`` but month is missing/sentinel -> use
+      ``survey_start_month`` (person's BEGRF / ``ref_start`` month) when
+      available; otherwise 365
     - drug's earliest start-year is missing or > ``year`` -> 365 (conservative)
     """
     fy = pd.to_numeric(first_year, errors="coerce")
@@ -819,8 +822,14 @@ def _drug_start_days_in_year(
         m: (year_end - date(year, m, 1)).days + 1 for m in range(1, 13)
     }
     out = pd.Series(365, index=fy.index, dtype="int64")
-    mask = fy.eq(year) & fm.between(1, 12)
-    out.loc[mask] = fm.loc[mask].astype(int).map(days_by_month).astype("int64")
+    mask_med = fy.eq(year) & fm.between(1, 12)
+    out.loc[mask_med] = fm.loc[mask_med].astype(int).map(days_by_month).astype("int64")
+    if survey_start_month is not None:
+        sm = pd.to_numeric(survey_start_month, errors="coerce")
+        mask_survey = fy.eq(year) & ~fm.between(1, 12) & sm.between(1, 12)
+        out.loc[mask_survey] = (
+            sm.loc[mask_survey].astype(int).map(days_by_month).astype("int64")
+        )
     return out
 
 
@@ -1155,9 +1164,8 @@ def build(
     gm = gm.rename(columns={"RXXP": xp_col, "RXSF": sf_col})
     gm["RXDRGNAME"] = _normalize_rxdrgname(gm["RXDRGNAM"], gm["RXNAME"])
     gm = gm.drop(columns=["RXDRGNAM"])
-    # Denominator adjustment for drugs first prescribed mid-year: caps at (Dec 31
-    # - first-of-first-month + 1); falls back to 365 when start-month is missing
-    # or start-year is not this year.
+    # Preliminary drug-start days (no survey-start fallback yet — that needs
+    # ref_start from PSTATS/BEGRF, applied after the reference-days merge).
     gm["drug_start_days"] = _drug_start_days_in_year(
         year, gm["RXBEGYRX"], gm["first_month"]
     )
@@ -1332,10 +1340,24 @@ def build(
     # -- 11. Merge reference_days_df + compute adherence ----------------
     gm = gm.merge(reference_days_df, on="DUPERSID", how="left")
 
-    # Shrink the person-year window to the drug's own eligibility window when
-    # the drug wasn't active for the whole year (started in this year with a
-    # known month). Old drugs and missing-month sentinels keep 365 so the
-    # person-year PSTATS days are the only constraint.
+    # Recompute drug_start_days with survey-start fallback now that ref_start
+    # is available. Same-year fills with missing RXBEGMM use the person's
+    # BEGRF / ref_start month (matches 2023_clean intent).
+    ref_col = f"ref_start_{year}"
+    survey_month = (
+        pd.to_datetime(gm[ref_col], errors="coerce").dt.month
+        if ref_col in gm.columns
+        else None
+    )
+    gm["drug_start_days"] = _drug_start_days_in_year(
+        year,
+        gm["RXBEGYRX"],
+        gm["first_month"],
+        survey_start_month=survey_month,
+    )
+
+    # Shrink the person-year window to the drug's own eligibility window.
+    # Prior-year starts keep drug_start_days=365 so PSTATS days bind.
     gm["total_days_supply"] = np.minimum(
         gm["total_days_supply"], gm["drug_start_days"]
     ).astype(int)
@@ -1348,13 +1370,11 @@ def build(
         "wanted."
     )
     log.decide(
-        "Drug-start denominator adjust: for pairs whose earliest fill has "
-        "RXBEGYRX == this year AND RXBEGMM in 1..12, total_days_supply is "
-        "clamped to (Dec 31 - first-of-first-month + 1). Sentinel months "
-        "(-1/-7/-8/-15) and earlier-year starts fall back to the full "
-        "person-year window. ~31.6 pct of 2023 chronic-drug pairs get a "
-        "shorter denominator; the remaining ~68 pct keep 365 because the "
-        "drug is old or the start month is missing."
+        "Drug-start denominator adjust: RXBEGYRX < year → 365. "
+        "RXBEGYRX == year with RXBEGMM in 1..12 → days from that month to "
+        "Dec 31. RXBEGYRX == year with missing/sentinel month → use the "
+        "person's survey start month (ref_start / BEGRF). Final "
+        "total_days_supply = min(PSTATS eligible days, drug_start_days)."
     )
 
     # Drop round-detail cols the caller doesn't need

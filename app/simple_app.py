@@ -1795,9 +1795,17 @@ def transition_pct_heatmap(corr_pct: pd.DataFrame) -> go.Figure:
 # ---------------------------------------------------------------------------
 
 
-tab_home, tab_analysis, tab_method, tab_viz, tab_models, tab_gates = st.tabs(
-    ["Home", "Analysis", "Methodology", "Visualization", "Models", "Gates"]
-)
+# Models is multi-year only (prior-year lag + 2021–2022 → 2023 holdout).
+_show_models_tab = year_selection == ALL_YEARS_LABEL
+if _show_models_tab:
+    tab_home, tab_analysis, tab_method, tab_viz, tab_models, tab_gates = st.tabs(
+        ["Home", "Analysis", "Methodology", "Visualization", "Models", "Gates"]
+    )
+else:
+    tab_home, tab_analysis, tab_method, tab_viz, tab_gates = st.tabs(
+        ["Home", "Analysis", "Methodology", "Visualization", "Gates"]
+    )
+    tab_models = None
 
 
 # ---- Home -----------------------------------------------------------------
@@ -2141,10 +2149,13 @@ def render_methodology(
     st.markdown(
         f"When a medication began during {example_year} and had a valid start month, the "
         f"drug-specific observation period was calculated from the first day of that month "
-        f"through December 31. Medications that began before {example_year} or had an "
-        f"unknown start month retained the person-level observation period. The final "
-        f"denominator was the smaller of the person-level and drug-specific observation "
-        f"windows."
+        f"through December 31. Medications that began before {example_year} keep a "
+        f"365-day drug window (the person-level PSTATS window still applies). "
+        f"If the medication start year equals {example_year} but the start month is "
+        f"missing or a MEPS sentinel, the pipeline uses the person’s survey start "
+        f"month from BEGRF / reference-period dates instead of inventing a January "
+        f"start. The final denominator is the smaller of the person-level and "
+        f"drug-specific observation windows."
     )
 
     st.markdown("**Step 10: Calculate medication adherence.**")
@@ -2422,384 +2433,385 @@ with tab_viz:
 
 # ---- Models ---------------------------------------------------------------
 
-with tab_models:
-    st.header("Models")
-    st.caption(
-        "Correlation, AUC / feature importance, and interactive prediction. "
-        "Feature-group table uses train 2021–2022 → test 2023; "
-        "everything + prior matrix/curve uses an all-years person-level holdout."
-    )
-
-    model_path = all_years_output_dirs()[0] / MODEL_DF_ALL_YEARS
-    if not model_path.exists():
-        st.warning(
-            f"`{MODEL_DF_ALL_YEARS}` not found under output/all_years/tables. "
-            "Build the all-years model frame first (see the merge notebook / "
-            "`python clean_meps.py cache-all-years`)."
+if tab_models is not None:
+    with tab_models:
+        st.header("Models")
+        st.caption(
+            "Correlation, AUC / feature importance, and interactive prediction. "
+            "Feature-group table uses train 2021–2022 → test 2023; "
+            "everything + prior matrix/curve uses an all-years person-level holdout."
         )
-    else:
-        models_corr, models_auc, models_predict = st.tabs(
-            ["Correlation", "AUC", "Prediction"]
-        )
-        mtime = model_path.stat().st_mtime
-        bundle = compute_models_bundle(mtime)
 
-        with models_corr:
-            st.subheader("Year-to-year correlation")
-            if bundle is None:
-                st.error("Could not load the all-years model frame.")
-            else:
-                st.caption(
-                    f"Consecutive calendar-year pairs (n = {bundle['n_pairs']:,}). "
-                    "Each row is status in year Y; cells are % transitioning to "
-                    "year Y+1."
-                )
-                corr_display = bundle["corr_pct"].round(1).map(lambda v: f"{v:.1f}%")
-                corr_display.index.name = "Year Y \\ Year Y+1"
-                st.dataframe(corr_display, use_container_width=True)
-                st.plotly_chart(
-                    transition_pct_heatmap(bundle["corr_pct"]),
-                    use_container_width=True,
-                )
+        model_path = all_years_output_dirs()[0] / MODEL_DF_ALL_YEARS
+        if not model_path.exists():
+            st.warning(
+                f"`{MODEL_DF_ALL_YEARS}` not found under output/all_years/tables. "
+                "Build the all-years model frame first (see the merge notebook / "
+                "`python clean_meps.py cache-all-years`)."
+            )
+        else:
+            models_corr, models_auc, models_predict = st.tabs(
+                ["Correlation", "AUC", "Prediction"]
+            )
+            mtime = model_path.stat().st_mtime
+            bundle = compute_models_bundle(mtime)
 
-        with models_auc:
-            st.subheader("XGBoost AUC & features")
-            if bundle is None:
-                st.error("Could not load the all-years model frame.")
-            else:
-                st.caption(
-                    "Fixed params: n_estimators=300, max_depth=3, learning_rate=0.05, "
-                    "subsample=0.8, colsample_bytree=0.8, reg_lambda=5.0. "
-                    "Dropped from X: DUPERSID, YEAR, is_adherent, meps_adherence_ratio, "
-                    "prior_ratio."
-                )
-                xgb_table = bundle["xgb_table"].copy()
-                xgb_table["roc_auc_2023"] = xgb_table["roc_auc_2023"].map(
-                    lambda v: f"{v:.4f}"
-                )
-                st.caption(
-                    "Feature-group ROC-AUC below is the 2023 time-holdout "
-                    "(train 2021–2022 → test 2023)."
-                )
-                st.dataframe(xgb_table, use_container_width=True, hide_index=True)
-
-                ep = bundle["everything_prior"]
-                st.subheader("Everything + prior — all-years holdout")
-                if ep is None:
-                    st.info("Everything + prior model did not produce plot outputs.")
+            with models_corr:
+                st.subheader("Year-to-year correlation")
+                if bundle is None:
+                    st.error("Could not load the all-years model frame.")
                 else:
-                    years_lbl = (
-                        "–".join(str(y) for y in ep.get("years", []))
-                        if ep.get("years")
-                        else "all years"
-                    )
                     st.caption(
-                        f"Person-level 80/20 split on the lagged panel "
-                        f"({years_lbl}). "
-                        f"Features: {ep['n_features']:,} · "
-                        f"train {ep['n_train']:,} rows "
-                        f"({ep.get('n_train_people', 0):,} people) · "
-                        f"test {ep['n_test']:,} rows "
-                        f"({ep.get('n_test_people', 0):,} people) · "
-                        f"ROC-AUC: {ep['auc']:.4f}"
+                        f"Consecutive calendar-year pairs (n = {bundle['n_pairs']:,}). "
+                        "Each row is status in year Y; cells are % transitioning to "
+                        "year Y+1."
                     )
-                    c1, c2 = st.columns(2)
-                    with c1:
-                        st.plotly_chart(
-                            confusion_matrix_figure(
-                                ep["cm"],
-                                title="Everything + prior — confusion matrix (all years)",
-                                auc=ep["auc"],
-                            ),
-                            use_container_width=True,
-                        )
-                    with c2:
-                        st.plotly_chart(
-                            roc_curve_figure(
-                                ep["fpr"],
-                                ep["tpr"],
-                                auc=ep["auc"],
-                                title="Everything + prior — ROC curve (all years)",
-                            ),
-                            use_container_width=True,
-                        )
+                    corr_display = bundle["corr_pct"].round(1).map(lambda v: f"{v:.1f}%")
+                    corr_display.index.name = "Year Y \\ Year Y+1"
+                    st.dataframe(corr_display, use_container_width=True)
                     st.plotly_chart(
-                        gain_importance_figure(
-                            ep["gain_features"], ep["gain_values"]
-                        ),
+                        transition_pct_heatmap(bundle["corr_pct"]),
                         use_container_width=True,
                     )
 
-        with models_predict:
-            st.subheader("Predict adherence")
-            st.caption(
-                "Search and select conditions / drugs, set prior-year medication "
-                "continuity and demographics, then score with the "
-                "**everything + prior** XGBoost model."
-            )
-            pred_bundle = get_prediction_model(mtime)
-            catalog = prediction_catalog(mtime)
-            if pred_bundle is None:
-                st.error("Could not train the prediction model.")
-            else:
+            with models_auc:
+                st.subheader("XGBoost AUC & features")
+                if bundle is None:
+                    st.error("Could not load the all-years model frame.")
+                else:
+                    st.caption(
+                        "Fixed params: n_estimators=300, max_depth=3, learning_rate=0.05, "
+                        "subsample=0.8, colsample_bytree=0.8, reg_lambda=5.0. "
+                        "Dropped from X: DUPERSID, YEAR, is_adherent, meps_adherence_ratio, "
+                        "prior_ratio."
+                    )
+                    xgb_table = bundle["xgb_table"].copy()
+                    xgb_table["roc_auc_2023"] = xgb_table["roc_auc_2023"].map(
+                        lambda v: f"{v:.4f}"
+                    )
+                    st.caption(
+                        "Feature-group ROC-AUC below is the 2023 time-holdout "
+                        "(train 2021–2022 → test 2023)."
+                    )
+                    st.dataframe(xgb_table, use_container_width=True, hide_index=True)
+
+                    ep = bundle["everything_prior"]
+                    st.subheader("Everything + prior — all-years holdout")
+                    if ep is None:
+                        st.info("Everything + prior model did not produce plot outputs.")
+                    else:
+                        years_lbl = (
+                            "–".join(str(y) for y in ep.get("years", []))
+                            if ep.get("years")
+                            else "all years"
+                        )
+                        st.caption(
+                            f"Person-level 80/20 split on the lagged panel "
+                            f"({years_lbl}). "
+                            f"Features: {ep['n_features']:,} · "
+                            f"train {ep['n_train']:,} rows "
+                            f"({ep.get('n_train_people', 0):,} people) · "
+                            f"test {ep['n_test']:,} rows "
+                            f"({ep.get('n_test_people', 0):,} people) · "
+                            f"ROC-AUC: {ep['auc']:.4f}"
+                        )
+                        c1, c2 = st.columns(2)
+                        with c1:
+                            st.plotly_chart(
+                                confusion_matrix_figure(
+                                    ep["cm"],
+                                    title="Everything + prior — confusion matrix (all years)",
+                                    auc=ep["auc"],
+                                ),
+                                use_container_width=True,
+                            )
+                        with c2:
+                            st.plotly_chart(
+                                roc_curve_figure(
+                                    ep["fpr"],
+                                    ep["tpr"],
+                                    auc=ep["auc"],
+                                    title="Everything + prior — ROC curve (all years)",
+                                ),
+                                use_container_width=True,
+                            )
+                        st.plotly_chart(
+                            gain_importance_figure(
+                                ep["gain_features"], ep["gain_values"]
+                            ),
+                            use_container_width=True,
+                        )
+
+            with models_predict:
+                st.subheader("Predict adherence")
                 st.caption(
-                    f"Model holdout ROC-AUC {pred_bundle['auc']:.4f} · "
-                    f"{len(pred_bundle['feature_cols']):,} features · "
-                    f"train {pred_bundle['n_train']:,} / test {pred_bundle['n_test']:,}"
+                    "Search and select conditions / drugs, set prior-year medication "
+                    "continuity and demographics, then score with the "
+                    "**everything + prior** XGBoost model."
                 )
-
-                st.markdown("##### Conditions & drugs")
-                sel_conditions = st.multiselect(
-                    "Conditions (search by ICD or label)",
-                    options=catalog["conditions"],
-                    default=[],
-                    help="Type to search. Maps to ICD_* one-hots in the model.",
-                    key="pred_conditions",
-                )
-                if sel_conditions:
-                    drug_options = sorted(
-                        {
-                            d
-                            for cond in sel_conditions
-                            for d in catalog["condition_to_drugs"].get(cond, [])
-                        }
-                    )
-                    drug_help = (
-                        "Only drugs linked to the selected condition(s) in the "
-                        "MEPS pair panel. Type to search."
-                    )
-                    if not drug_options:
-                        st.info(
-                            "No linked drugs found for the selected condition(s) "
-                            "in the model panel."
-                        )
+                pred_bundle = get_prediction_model(mtime)
+                catalog = prediction_catalog(mtime)
+                if pred_bundle is None:
+                    st.error("Could not train the prediction model.")
                 else:
-                    drug_options = catalog["drugs"]
-                    drug_help = (
-                        "Select condition(s) first to narrow this list to linked "
-                        "drugs; otherwise all model drugs are shown."
-                    )
-                # Drop prior picks that are no longer valid for the new condition filter
-                prev_drugs = [
-                    d
-                    for d in st.session_state.get("pred_drugs", [])
-                    if d in drug_options
-                ]
-                if st.session_state.get("pred_drugs") != prev_drugs:
-                    st.session_state["pred_drugs"] = prev_drugs
-                sel_drugs = st.multiselect(
-                    "Drugs (search by name)",
-                    options=drug_options,
-                    help=drug_help,
-                    key="pred_drugs",
-                )
-                if sel_conditions:
                     st.caption(
-                        f"{len(drug_options):,} drug(s) linked to selected "
-                        f"condition(s)."
+                        f"Model holdout ROC-AUC {pred_bundle['auc']:.4f} · "
+                        f"{len(pred_bundle['feature_cols']):,} features · "
+                        f"train {pred_bundle['n_train']:,} / test {pred_bundle['n_test']:,}"
                     )
 
-                st.markdown("##### Prior year")
-                same_drugs = st.radio(
-                    "Was the person taking the same drugs previous year?",
-                    options=["Yes", "No"],
-                    horizontal=True,
-                    key="pred_same_drugs",
-                )
-                same_drugs_flag = same_drugs == "Yes"
-                prior_adh_label = st.radio(
-                    "Was the person adherent in the prior year?",
-                    options=["Yes", "No"],
-                    horizontal=True,
-                    index=0 if same_drugs_flag else 1,
-                    key="pred_prior_adh_yn",
-                )
-                prior_adh = prior_adh_label == "Yes"
-                prior_n_cond = max(len(sel_conditions), 1)
-                if same_drugs_flag:
-                    st.caption(
-                        f"Same drugs last year → prior drug count set to "
-                        f"{len(sel_drugs)} (current selection)."
+                    st.markdown("##### Conditions & drugs")
+                    sel_conditions = st.multiselect(
+                        "Conditions (search by ICD or label)",
+                        options=catalog["conditions"],
+                        default=[],
+                        help="Type to search. Maps to ICD_* one-hots in the model.",
+                        key="pred_conditions",
                     )
-                    prior_n_drugs = len(sel_drugs)
-                else:
-                    prior_n_drugs = st.number_input(
-                        "Prior # drugs (different regimen)",
-                        min_value=0,
-                        max_value=50,
-                        value=0,
-                        key="pred_prior_n_drugs",
-                    )
-
-                st.markdown("##### Demographics")
-                d1, d2, d3 = st.columns(3)
-                with d1:
-                    age = st.number_input(
-                        "Age", min_value=0, max_value=120, value=55, key="pred_age"
-                    )
-                    sex = st.selectbox(
-                        "Sex", options=list(SEX_LABELS.values()), key="pred_sex"
-                    )
-                    race = st.selectbox(
-                        "Race (RACEV2X group)",
-                        options=list(RACE_PRED_LABELS.keys()),
-                        key="pred_race",
-                    )
-                    racethx_label = st.selectbox(
-                        "Race/ethnicity (RACETHX)",
-                        options=[
-                            f"{k} — {v}" for k, v in RACETHX_PRED_LABELS.items()
-                        ],
-                        index=1,
-                        key="pred_racethx",
-                    )
-                    racethx = int(racethx_label.split(" — ", 1)[0])
-                with d2:
-                    insurance = st.selectbox(
-                        "Insurance",
-                        options=list(INSCOV_PRED_LABELS.keys()),
-                        key="pred_ins",
-                    )
-                    poverty = st.selectbox(
-                        "Poverty category",
-                        options=[POVCAT_LABELS[k] for k in sorted(POVCAT_LABELS)],
-                        index=3,
-                        key="pred_pov",
-                    )
-                    faminc = st.number_input(
-                        "Family income ($)",
-                        min_value=0.0,
-                        max_value=1_000_000.0,
-                        value=50_000.0,
-                        step=1000.0,
-                        key="pred_faminc",
-                    )
-                    educyr = st.number_input(
-                        "Years of education (EDUCYR)",
-                        min_value=0.0,
-                        max_value=17.0,
-                        value=12.0,
-                        step=1.0,
-                        key="pred_educyr",
-                    )
-                with d3:
-                    marry_label = st.selectbox(
-                        "Marital status",
-                        options=[
-                            f"{k} — {v}" for k, v in MARRY_PRED_LABELS.items()
-                        ],
-                        key="pred_marry",
-                    )
-                    marry = int(marry_label.split(" — ", 1)[0])
-                    region_label = st.selectbox(
-                        "Census region",
-                        options=[
-                            f"{k} — {v}" for k, v in REGION_PRED_LABELS.items()
-                        ],
-                        index=2,
-                        key="pred_region",
-                    )
-                    region = int(region_label.split(" — ", 1)[0])
-                    pmed_delay = st.checkbox(
-                        "Delayed getting Rx due to cost",
-                        value=False,
-                        key="pred_pmed_delay",
-                    )
-                    care_delay = st.checkbox(
-                        "Delayed medical care due to cost",
-                        value=False,
-                        key="pred_care_delay",
-                    )
-
-                st.markdown("##### Medication pattern & cost")
-                m1, m2, m3 = st.columns(3)
-                with m1:
-                    medication_freq = st.number_input(
-                        "Pills / day (approx.)",
-                        min_value=0.0,
-                        max_value=10.0,
-                        value=1.0,
-                        step=0.25,
-                        key="pred_med_freq",
-                    )
-                with m2:
-                    medication_dose = st.number_input(
-                        "Dose strength",
-                        min_value=0.0,
-                        max_value=1000.0,
-                        value=10.0,
-                        step=1.0,
-                        key="pred_med_dose",
-                    )
-                with m3:
-                    patient_cost_share = st.slider(
-                        "Patient cost share",
-                        min_value=0.0,
-                        max_value=1.0,
-                        value=0.2,
-                        step=0.01,
-                        key="pred_cost_share",
-                    )
-
-                if st.button("Predict adherence", type="primary", key="pred_run"):
-                    condition_cols = [
-                        catalog["icd_to_col"][c]
-                        for c in sel_conditions
-                        if c in catalog["icd_to_col"]
-                    ]
-                    drug_cols = [
-                        catalog["drug_to_col"][d]
-                        for d in sel_drugs
-                        if d in catalog["drug_to_col"]
-                    ]
-                    X_one = build_prediction_features(
-                        pred_bundle["feature_cols"],
-                        condition_cols=condition_cols,
-                        drug_cols=drug_cols,
-                        age=float(age),
-                        sex=sex,
-                        race=race,
-                        insurance=insurance,
-                        poverty=poverty,
-                        faminc=float(faminc),
-                        pmed_delay=pmed_delay,
-                        care_delay=care_delay,
-                        marry=marry,
-                        region=region,
-                        educyr=float(educyr),
-                        racethx=racethx,
-                        patient_cost_share=float(patient_cost_share),
-                        medication_freq=float(medication_freq),
-                        medication_dose=float(medication_dose),
-                        same_drugs_prior_year=same_drugs_flag,
-                        prior_is_adherent=prior_adh,
-                        prior_n_drugs=int(prior_n_drugs),
-                        prior_n_cond=int(prior_n_cond),
-                    )
-                    proba = float(
-                        pred_bundle["model"].predict_proba(X_one)[0, 1]
-                    )
-                    label = "likely adherent" if proba >= 0.5 else "likely not adherent"
-                    r1, r2, r3 = st.columns(3)
-                    r1.metric("Model confidence", f"{100 * proba:.1f}%")
-                    r2.metric("Predicted class", label)
-                    r3.metric(
-                        "Inputs",
-                        f"{len(sel_conditions)} cond · {len(sel_drugs)} drugs",
-                    )
-                    st.caption(
-                        f"**{100 * proba:.1f}%** is the model’s probability that this "
-                        f"profile is in the **adherent class** (decision cutoff 50%), "
-                        f"not a predicted adherence ratio. The adherent class itself "
-                        f"was defined in training as ratio ≥ **60%**."
-                    )
-                    with st.expander("Feature row (non-zero values)"):
-                        nz = X_one.T
-                        nz.columns = ["value"]
-                        nz = nz[nz["value"] != 0].sort_values(
-                            "value", ascending=False
+                    if sel_conditions:
+                        drug_options = sorted(
+                            {
+                                d
+                                for cond in sel_conditions
+                                for d in catalog["condition_to_drugs"].get(cond, [])
+                            }
                         )
-                        st.dataframe(nz, use_container_width=True)
+                        drug_help = (
+                            "Only drugs linked to the selected condition(s) in the "
+                            "MEPS pair panel. Type to search."
+                        )
+                        if not drug_options:
+                            st.info(
+                                "No linked drugs found for the selected condition(s) "
+                                "in the model panel."
+                            )
+                    else:
+                        drug_options = catalog["drugs"]
+                        drug_help = (
+                            "Select condition(s) first to narrow this list to linked "
+                            "drugs; otherwise all model drugs are shown."
+                        )
+                    # Drop prior picks that are no longer valid for the new condition filter
+                    prev_drugs = [
+                        d
+                        for d in st.session_state.get("pred_drugs", [])
+                        if d in drug_options
+                    ]
+                    if st.session_state.get("pred_drugs") != prev_drugs:
+                        st.session_state["pred_drugs"] = prev_drugs
+                    sel_drugs = st.multiselect(
+                        "Drugs (search by name)",
+                        options=drug_options,
+                        help=drug_help,
+                        key="pred_drugs",
+                    )
+                    if sel_conditions:
+                        st.caption(
+                            f"{len(drug_options):,} drug(s) linked to selected "
+                            f"condition(s)."
+                        )
+
+                    st.markdown("##### Prior year")
+                    same_drugs = st.radio(
+                        "Was the person taking the same drugs previous year?",
+                        options=["Yes", "No"],
+                        horizontal=True,
+                        key="pred_same_drugs",
+                    )
+                    same_drugs_flag = same_drugs == "Yes"
+                    prior_adh_label = st.radio(
+                        "Was the person adherent in the prior year?",
+                        options=["Yes", "No"],
+                        horizontal=True,
+                        index=0 if same_drugs_flag else 1,
+                        key="pred_prior_adh_yn",
+                    )
+                    prior_adh = prior_adh_label == "Yes"
+                    prior_n_cond = max(len(sel_conditions), 1)
+                    if same_drugs_flag:
+                        st.caption(
+                            f"Same drugs last year → prior drug count set to "
+                            f"{len(sel_drugs)} (current selection)."
+                        )
+                        prior_n_drugs = len(sel_drugs)
+                    else:
+                        prior_n_drugs = st.number_input(
+                            "Prior # drugs (different regimen)",
+                            min_value=0,
+                            max_value=50,
+                            value=0,
+                            key="pred_prior_n_drugs",
+                        )
+
+                    st.markdown("##### Demographics")
+                    d1, d2, d3 = st.columns(3)
+                    with d1:
+                        age = st.number_input(
+                            "Age", min_value=0, max_value=120, value=55, key="pred_age"
+                        )
+                        sex = st.selectbox(
+                            "Sex", options=list(SEX_LABELS.values()), key="pred_sex"
+                        )
+                        race = st.selectbox(
+                            "Race (RACEV2X group)",
+                            options=list(RACE_PRED_LABELS.keys()),
+                            key="pred_race",
+                        )
+                        racethx_label = st.selectbox(
+                            "Race/ethnicity (RACETHX)",
+                            options=[
+                                f"{k} — {v}" for k, v in RACETHX_PRED_LABELS.items()
+                            ],
+                            index=1,
+                            key="pred_racethx",
+                        )
+                        racethx = int(racethx_label.split(" — ", 1)[0])
+                    with d2:
+                        insurance = st.selectbox(
+                            "Insurance",
+                            options=list(INSCOV_PRED_LABELS.keys()),
+                            key="pred_ins",
+                        )
+                        poverty = st.selectbox(
+                            "Poverty category",
+                            options=[POVCAT_LABELS[k] for k in sorted(POVCAT_LABELS)],
+                            index=3,
+                            key="pred_pov",
+                        )
+                        faminc = st.number_input(
+                            "Family income ($)",
+                            min_value=0.0,
+                            max_value=1_000_000.0,
+                            value=50_000.0,
+                            step=1000.0,
+                            key="pred_faminc",
+                        )
+                        educyr = st.number_input(
+                            "Years of education (EDUCYR)",
+                            min_value=0.0,
+                            max_value=17.0,
+                            value=12.0,
+                            step=1.0,
+                            key="pred_educyr",
+                        )
+                    with d3:
+                        marry_label = st.selectbox(
+                            "Marital status",
+                            options=[
+                                f"{k} — {v}" for k, v in MARRY_PRED_LABELS.items()
+                            ],
+                            key="pred_marry",
+                        )
+                        marry = int(marry_label.split(" — ", 1)[0])
+                        region_label = st.selectbox(
+                            "Census region",
+                            options=[
+                                f"{k} — {v}" for k, v in REGION_PRED_LABELS.items()
+                            ],
+                            index=2,
+                            key="pred_region",
+                        )
+                        region = int(region_label.split(" — ", 1)[0])
+                        pmed_delay = st.checkbox(
+                            "Delayed getting Rx due to cost",
+                            value=False,
+                            key="pred_pmed_delay",
+                        )
+                        care_delay = st.checkbox(
+                            "Delayed medical care due to cost",
+                            value=False,
+                            key="pred_care_delay",
+                        )
+
+                    st.markdown("##### Medication pattern & cost")
+                    m1, m2, m3 = st.columns(3)
+                    with m1:
+                        medication_freq = st.number_input(
+                            "Pills / day (approx.)",
+                            min_value=0.0,
+                            max_value=10.0,
+                            value=1.0,
+                            step=0.25,
+                            key="pred_med_freq",
+                        )
+                    with m2:
+                        medication_dose = st.number_input(
+                            "Dose strength",
+                            min_value=0.0,
+                            max_value=1000.0,
+                            value=10.0,
+                            step=1.0,
+                            key="pred_med_dose",
+                        )
+                    with m3:
+                        patient_cost_share = st.slider(
+                            "Patient cost share",
+                            min_value=0.0,
+                            max_value=1.0,
+                            value=0.2,
+                            step=0.01,
+                            key="pred_cost_share",
+                        )
+
+                    if st.button("Predict adherence", type="primary", key="pred_run"):
+                        condition_cols = [
+                            catalog["icd_to_col"][c]
+                            for c in sel_conditions
+                            if c in catalog["icd_to_col"]
+                        ]
+                        drug_cols = [
+                            catalog["drug_to_col"][d]
+                            for d in sel_drugs
+                            if d in catalog["drug_to_col"]
+                        ]
+                        X_one = build_prediction_features(
+                            pred_bundle["feature_cols"],
+                            condition_cols=condition_cols,
+                            drug_cols=drug_cols,
+                            age=float(age),
+                            sex=sex,
+                            race=race,
+                            insurance=insurance,
+                            poverty=poverty,
+                            faminc=float(faminc),
+                            pmed_delay=pmed_delay,
+                            care_delay=care_delay,
+                            marry=marry,
+                            region=region,
+                            educyr=float(educyr),
+                            racethx=racethx,
+                            patient_cost_share=float(patient_cost_share),
+                            medication_freq=float(medication_freq),
+                            medication_dose=float(medication_dose),
+                            same_drugs_prior_year=same_drugs_flag,
+                            prior_is_adherent=prior_adh,
+                            prior_n_drugs=int(prior_n_drugs),
+                            prior_n_cond=int(prior_n_cond),
+                        )
+                        proba = float(
+                            pred_bundle["model"].predict_proba(X_one)[0, 1]
+                        )
+                        label = "likely adherent" if proba >= 0.5 else "likely not adherent"
+                        r1, r2, r3 = st.columns(3)
+                        r1.metric("Model confidence", f"{100 * proba:.1f}%")
+                        r2.metric("Predicted class", label)
+                        r3.metric(
+                            "Inputs",
+                            f"{len(sel_conditions)} cond · {len(sel_drugs)} drugs",
+                        )
+                        st.caption(
+                            f"**{100 * proba:.1f}%** is the model’s probability that this "
+                            f"profile is in the **adherent class** (decision cutoff 50%), "
+                            f"not a predicted adherence ratio. The adherent class itself "
+                            f"was defined in training as ratio ≥ **60%**."
+                        )
+                        with st.expander("Feature row (non-zero values)"):
+                            nz = X_one.T
+                            nz.columns = ["value"]
+                            nz = nz[nz["value"] != 0].sort_values(
+                                "value", ascending=False
+                            )
+                            st.dataframe(nz, use_container_width=True)
 
 
 # ---- Gates ----------------------------------------------------------------
