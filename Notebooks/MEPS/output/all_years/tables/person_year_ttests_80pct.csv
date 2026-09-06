@@ -1,0 +1,331 @@
+Characteristic,Outcome,Group A,N_A,Mean_A,Group B,N_B,Mean_B,Diff (A−B),t,p,Significant (p<0.05),q (BH-FDR),Significant (FDR<0.05)
+Adherent vs not adherent,Age (years),Adherent (≥80%),7826,60.52,Not adherent (<80%),20859,58.43,2.09,9.169,0.0,True,0.0,True
+Adherent vs not adherent,Family income ($),Adherent (≥80%),7826,78384.1,Not adherent (<80%),20865,76957.88,1426.22,1.406,0.1596,False,0.227,False
+Adherent vs not adherent,Patient cost share (0–1),Adherent (≥80%),7826,0.4,Not adherent (<80%),20865,0.37,0.02,4.328,0.0,True,0.0,True
+Adherent vs not adherent,Number of medications,Adherent (≥80%),7826,2.51,Not adherent (<80%),20865,2.61,-0.1,-3.928,0.0001,True,0.0003,True
+Adherent vs not adherent,Number of conditions,Adherent (≥80%),7826,1.96,Not adherent (<80%),20865,1.99,-0.04,-2.408,0.016,True,0.0287,True
+Adherent vs not adherent,Dosing frequency (per day),Adherent (≥80%),7823,1.42,Not adherent (<80%),20856,1.43,-0.01,-1.248,0.2121,False,0.2929,False
+Adherent vs not adherent,Medication dose,Adherent (≥80%),7717,421.1,Not adherent (<80%),20508,408.05,13.05,0.436,0.663,False,0.7519,False
+Adherent vs not adherent,Years of education,Adherent (≥80%),7777,13.18,Not adherent (<80%),20683,12.94,0.24,5.334,0.0,True,0.0,True
+Sex,Adherence ratio (%),Female,16088,59.81,All other person-years,12603,61.16,-1.34,-4.194,0.0,True,0.0,True
+Sex,% adherent (≥80%),Female,16088,26.45,All other person-years,12603,28.33,-1.87,-3.525,0.0004,True,0.001,True
+Sex,Adherence ratio (%),Male,12603,61.16,All other person-years,16088,59.81,1.34,4.194,0.0,True,0.0,True
+Sex,% adherent (≥80%),Male,12603,28.33,All other person-years,16088,26.45,1.87,3.525,0.0004,True,0.001,True
+Sex,Adherence ratio (%),Female,16088,59.81,Male,12603,61.16,-1.34,-4.194,0.0,True,0.0,True
+Sex,% adherent (≥80%),Female,16088,26.45,Male,12603,28.33,-1.87,-3.525,0.0004,True,0.001,True
+Age group,Adherence ratio (%),Under 30,2328,49.05,All other person-years,26357,61.41,-12.36,-19.455,0.0,True,0.0,True
+Age group,% adherent (≥80%),Under 30,2328,19.93,All other person-years,26357,27.93,-8.0,-9.164,0.0,True,0.0,True
+Age group,Adherence ratio (%),30–60,10581,58.36,All other person-years,18104,61.6,-3.24,-9.69,0.0,True,0.0,True
+Age group,% adherent (≥80%),30–60,10581,26.34,All other person-years,18104,27.83,-1.49,-2.754,0.0059,True,0.0116,True
+Age group,Adherence ratio (%),Above 60,15776,63.45,All other person-years,12909,56.68,6.77,21.081,0.0,True,0.0,True
+Age group,% adherent (≥80%),Above 60,15776,29.0,All other person-years,12909,25.18,3.82,7.257,0.0,True,0.0,True
+Age group,Adherence ratio (%),Under 30,2328,49.05,30–60,10581,58.36,-9.31,-13.876,0.0,True,0.0,True
+Age group,% adherent (≥80%),Under 30,2328,19.93,30–60,10581,26.34,-6.41,-6.874,0.0,True,0.0,True
+Age group,Adherence ratio (%),Under 30,2328,49.05,Above 60,15776,63.45,-14.41,-22.29,0.0,True,0.0,True
+Age group,% adherent (≥80%),Under 30,2328,19.93,Above 60,15776,29.0,-9.07,-10.037,0.0,True,0.0,True
+Age group,Adherence ratio (%),30–60,10581,58.36,Above 60,15776,63.45,-5.09,-15.079,0.0,True,0.0,True
+Age group,% adherent (≥80%),30–60,10581,26.34,Above 60,15776,29.0,-2.66,-4.748,0.0,True,0.0,True
+Race,Adherence ratio (%),Hispanic,4130,56.54,All other person-years,24561,61.05,-4.52,-9.606,0.0,True,0.0,True
+Race,% adherent (≥80%),Hispanic,4130,24.26,All other person-years,24561,27.78,-3.52,-4.853,0.0,True,0.0,True
+Race,Adherence ratio (%),White only,18881,62.15,All other person-years,9810,57.05,5.1,15.063,0.0,True,0.0,True
+Race,% adherent (≥80%),White only,18881,29.01,All other person-years,9810,23.94,5.06,9.326,0.0,True,0.0,True
+Race,Adherence ratio (%),Black only,3923,56.52,All other person-years,24768,61.02,-4.49,-9.698,0.0,True,0.0,True
+Race,% adherent (≥80%),Black only,3923,22.36,All other person-years,24768,28.06,-5.7,-7.875,0.0,True,0.0,True
+Race,Adherence ratio (%),Asian only,906,61.22,All other person-years,27785,60.38,0.85,0.92,0.3576,False,0.4628,False
+Race,% adherent (≥80%),Asian only,906,28.15,All other person-years,27785,27.25,0.9,0.591,0.5548,False,0.6586,False
+Race,Adherence ratio (%),Other / multiple,851,57.49,All other person-years,27840,60.49,-3.01,-3.143,0.0017,True,0.0037,True
+Race,% adherent (≥80%),Other / multiple,851,25.26,All other person-years,27840,27.34,-2.07,-1.37,0.1711,False,0.2413,False
+Race,Adherence ratio (%),Hispanic,4130,56.54,White only,18881,62.15,-5.61,-11.72,0.0,True,0.0,True
+Race,% adherent (≥80%),Hispanic,4130,24.26,White only,18881,29.01,-4.75,-6.376,0.0,True,0.0,True
+Race,Adherence ratio (%),Hispanic,4130,56.54,Black only,3923,56.52,0.01,0.021,0.9832,False,0.9862,False
+Race,% adherent (≥80%),Hispanic,4130,24.26,Black only,3923,22.36,1.91,2.023,0.0431,True,0.069,False
+Race,Adherence ratio (%),Hispanic,4130,56.54,Asian only,906,61.22,-4.69,-4.657,0.0,True,0.0,True
+Race,% adherent (≥80%),Hispanic,4130,24.26,Asian only,906,28.15,-3.88,-2.373,0.0178,True,0.0318,True
+Race,Adherence ratio (%),Hispanic,4130,56.54,Other / multiple,851,57.49,-0.95,-0.914,0.3609,False,0.4651,False
+Race,% adherent (≥80%),Hispanic,4130,24.26,Other / multiple,851,25.26,-1.0,-0.614,0.5392,False,0.6447,False
+Race,Adherence ratio (%),White only,18881,62.15,Black only,3923,56.52,5.62,11.919,0.0,True,0.0,True
+Race,% adherent (≥80%),White only,18881,29.01,Black only,3923,22.36,6.65,8.957,0.0,True,0.0,True
+Race,Adherence ratio (%),White only,18881,62.15,Asian only,906,61.22,0.92,0.997,0.3188,False,0.4191,False
+Race,% adherent (≥80%),White only,18881,29.01,Asian only,906,28.15,0.86,0.563,0.5734,False,0.6686,False
+Race,Adherence ratio (%),White only,18881,62.15,Other / multiple,851,57.49,4.66,4.844,0.0,True,0.0,True
+Race,% adherent (≥80%),White only,18881,29.01,Other / multiple,851,25.26,3.74,2.452,0.0144,True,0.0264,True
+Race,Adherence ratio (%),Black only,3923,56.52,Asian only,906,61.22,-4.7,-4.685,0.0,True,0.0,True
+Race,% adherent (≥80%),Black only,3923,22.36,Asian only,906,28.15,-5.79,-3.539,0.0004,True,0.001,True
+Race,Adherence ratio (%),Black only,3923,56.52,Other / multiple,851,57.49,-0.96,-0.929,0.3529,False,0.4585,False
+Race,% adherent (≥80%),Black only,3923,22.36,Other / multiple,851,25.26,-2.91,-1.782,0.0749,False,0.1139,False
+Race,Adherence ratio (%),Asian only,906,61.22,Other / multiple,851,57.49,3.74,2.858,0.0043,True,0.0087,True
+Race,% adherent (≥80%),Asian only,906,28.15,Other / multiple,851,25.26,2.88,1.365,0.1724,False,0.2421,False
+Marital status,Adherence ratio (%),Married,13665,61.31,All other person-years,14170,60.38,0.92,2.879,0.004,True,0.0081,True
+Marital status,% adherent (≥80%),Married,13665,28.22,All other person-years,14170,26.97,1.25,2.337,0.0194,True,0.0333,True
+Marital status,Adherence ratio (%),Widowed,3759,62.6,All other person-years,24076,60.56,2.04,4.547,0.0,True,0.0,True
+Marital status,% adherent (≥80%),Widowed,3759,28.04,All other person-years,24076,27.51,0.53,0.674,0.5003,False,0.6138,False
+Marital status,Adherence ratio (%),Divorced,5092,61.62,All other person-years,22743,60.66,0.96,2.368,0.0179,True,0.0318,True
+Marital status,% adherent (≥80%),Divorced,5092,27.85,All other person-years,22743,27.52,0.33,0.471,0.6377,False,0.7307,False
+Marital status,Adherence ratio (%),Separated,738,60.41,All other person-years,27097,60.85,-0.43,-0.422,0.673,False,0.7606,False
+Marital status,% adherent (≥80%),Separated,738,28.05,All other person-years,27097,27.57,0.48,0.287,0.7742,False,0.8322,False
+Marital status,Adherence ratio (%),Never married,4581,57.17,All other person-years,23254,61.56,-4.38,-9.742,0.0,True,0.0,True
+Marital status,% adherent (≥80%),Never married,4581,24.93,All other person-years,23254,28.1,-3.17,-4.509,0.0,True,0.0,True
+Marital status,Adherence ratio (%),Married,13665,61.31,Widowed,3759,62.6,-1.3,-2.74,0.0062,True,0.012,True
+Marital status,% adherent (≥80%),Married,13665,28.22,Widowed,3759,28.04,0.18,0.216,0.8291,False,0.8798,False
+Marital status,Adherence ratio (%),Married,13665,61.31,Divorced,5092,61.62,-0.32,-0.735,0.4623,False,0.5757,False
+Marital status,% adherent (≥80%),Married,13665,28.22,Divorced,5092,27.85,0.37,0.503,0.6151,False,0.7082,False
+Marital status,Adherence ratio (%),Married,13665,61.31,Separated,738,60.41,0.89,0.859,0.3904,False,0.4936,False
+Marital status,% adherent (≥80%),Married,13665,28.22,Separated,738,28.05,0.17,0.1,0.9207,False,0.9407,False
+Marital status,Adherence ratio (%),Married,13665,61.31,Never married,4581,57.17,4.13,8.715,0.0,True,0.0,True
+Marital status,% adherent (≥80%),Married,13665,28.22,Never married,4581,24.93,3.29,4.408,0.0,True,0.0,True
+Marital status,Adherence ratio (%),Widowed,3759,62.6,Divorced,5092,61.62,0.98,1.773,0.0762,False,0.1153,False
+Marital status,% adherent (≥80%),Widowed,3759,28.04,Divorced,5092,27.85,0.19,0.199,0.8425,False,0.8888,False
+Marital status,Adherence ratio (%),Widowed,3759,62.6,Separated,738,60.41,2.19,2.002,0.0455,True,0.0722,False
+Marital status,% adherent (≥80%),Widowed,3759,28.04,Separated,738,28.05,-0.01,-0.005,0.9959,False,0.9959,False
+Marital status,Adherence ratio (%),Widowed,3759,62.6,Never married,4581,57.17,5.43,9.255,0.0,True,0.0,True
+Marital status,% adherent (≥80%),Widowed,3759,28.04,Never married,4581,24.93,3.11,3.199,0.0014,True,0.0031,True
+Marital status,Adherence ratio (%),Divorced,5092,61.62,Separated,738,60.41,1.21,1.124,0.2615,False,0.3537,False
+Marital status,% adherent (≥80%),Divorced,5092,27.85,Separated,738,28.05,-0.2,-0.114,0.9095,False,0.9379,False
+Marital status,Adherence ratio (%),Divorced,5092,61.62,Never married,4581,57.17,4.45,8.041,0.0,True,0.0,True
+Marital status,% adherent (≥80%),Divorced,5092,27.85,Never married,4581,24.93,2.92,3.256,0.0011,True,0.0025,True
+Marital status,Adherence ratio (%),Separated,738,60.41,Never married,4581,57.17,3.24,2.963,0.0031,True,0.0064,True
+Marital status,% adherent (≥80%),Separated,738,28.05,Never married,4581,24.93,3.12,1.759,0.079,False,0.1185,False
+Education,Adherence ratio (%),Less than high school,5023,57.2,All other person-years,23437,61.18,-3.98,-9.273,0.0,True,0.0,True
+Education,% adherent (≥80%),Less than high school,5023,24.61,All other person-years,23437,27.91,-3.3,-4.894,0.0,True,0.0,True
+Education,Adherence ratio (%),High school (12 yrs),8140,61.35,All other person-years,20320,60.13,1.22,3.481,0.0005,True,0.0012,True
+Education,% adherent (≥80%),High school (12 yrs),8140,27.52,All other person-years,20320,27.25,0.27,0.46,0.6453,False,0.7368,False
+Education,Adherence ratio (%),Some college (13–15),6403,60.7,All other person-years,22057,60.42,0.28,0.735,0.4623,False,0.5757,False
+Education,% adherent (≥80%),Some college (13–15),6403,27.05,All other person-years,22057,27.41,-0.36,-0.565,0.5723,False,0.6686,False
+Education,Adherence ratio (%),College (16 yrs),5024,61.46,All other person-years,23436,60.27,1.19,2.839,0.0045,True,0.009,True
+Education,% adherent (≥80%),College (16 yrs),5024,29.04,All other person-years,23436,26.96,2.08,2.962,0.0031,True,0.0064,True
+Education,Adherence ratio (%),17+ years,3870,61.28,All other person-years,24590,60.36,0.93,1.992,0.0464,True,0.0729,False
+Education,% adherent (≥80%),17+ years,3870,28.68,All other person-years,24590,27.11,1.57,2.011,0.0444,True,0.0708,False
+Education,Adherence ratio (%),Less than high school,5023,57.2,High school (12 yrs),8140,61.35,-4.15,-8.465,0.0,True,0.0,True
+Education,% adherent (≥80%),Less than high school,5023,24.61,High school (12 yrs),8140,27.52,-2.91,-3.714,0.0002,True,0.0005,True
+Education,Adherence ratio (%),Less than high school,5023,57.2,Some college (13–15),6403,60.7,-3.5,-6.797,0.0,True,0.0,True
+Education,% adherent (≥80%),Less than high school,5023,24.61,Some college (13–15),6403,27.05,-2.44,-2.968,0.003,True,0.0063,True
+Education,Adherence ratio (%),Less than high school,5023,57.2,College (16 yrs),5024,61.46,-4.26,-7.792,0.0,True,0.0,True
+Education,% adherent (≥80%),Less than high school,5023,24.61,College (16 yrs),5024,29.04,-4.43,-5.021,0.0,True,0.0,True
+Education,Adherence ratio (%),Less than high school,5023,57.2,17+ years,3870,61.28,-4.08,-6.988,0.0,True,0.0,True
+Education,% adherent (≥80%),Less than high school,5023,24.61,17+ years,3870,28.68,-4.08,-4.3,0.0,True,0.0,True
+Education,Adherence ratio (%),High school (12 yrs),8140,61.35,Some college (13–15),6403,60.7,0.65,1.473,0.1407,False,0.201,False
+Education,% adherent (≥80%),High school (12 yrs),8140,27.52,Some college (13–15),6403,27.05,0.47,0.63,0.5287,False,0.6344,False
+Education,Adherence ratio (%),High school (12 yrs),8140,61.35,College (16 yrs),5024,61.46,-0.11,-0.232,0.8167,False,0.8722,False
+Education,% adherent (≥80%),High school (12 yrs),8140,27.52,College (16 yrs),5024,29.04,-1.52,-1.88,0.0601,False,0.0936,False
+Education,Adherence ratio (%),High school (12 yrs),8140,61.35,17+ years,3870,61.28,0.07,0.13,0.8963,False,0.9331,False
+Education,% adherent (≥80%),High school (12 yrs),8140,27.52,17+ years,3870,28.68,-1.16,-1.323,0.1859,False,0.2599,False
+Education,Adherence ratio (%),Some college (13–15),6403,60.7,College (16 yrs),5024,61.46,-0.76,-1.513,0.1303,False,0.1878,False
+Education,% adherent (≥80%),Some college (13–15),6403,27.05,College (16 yrs),5024,29.04,-1.99,-2.349,0.0189,True,0.0328,True
+Education,Adherence ratio (%),Some college (13–15),6403,60.7,17+ years,3870,61.28,-0.58,-1.073,0.2834,False,0.379,False
+Education,% adherent (≥80%),Some college (13–15),6403,27.05,17+ years,3870,28.68,-1.63,-1.784,0.0744,False,0.1137,False
+Education,Adherence ratio (%),College (16 yrs),5024,61.46,17+ years,3870,61.28,0.18,0.312,0.7554,False,0.82,False
+Education,% adherent (≥80%),College (16 yrs),5024,29.04,17+ years,3870,28.68,0.36,0.37,0.7115,False,0.7875,False
+Income group,Adherence ratio (%),Poor,4603,58.55,All other person-years,24088,60.76,-2.21,-5.132,0.0,True,0.0,True
+Income group,% adherent (≥80%),Poor,4603,24.51,All other person-years,24088,27.81,-3.3,-4.738,0.0,True,0.0,True
+Income group,Adherence ratio (%),Near poor,1518,60.35,All other person-years,27173,60.41,-0.06,-0.078,0.9378,False,0.9522,False
+Income group,% adherent (≥80%),Near poor,1518,27.67,All other person-years,27173,27.25,0.41,0.35,0.7264,False,0.7968,False
+Income group,Adherence ratio (%),Low income,4000,60.76,All other person-years,24691,60.35,0.41,0.911,0.3622,False,0.4651,False
+Income group,% adherent (≥80%),Low income,4000,27.9,All other person-years,24691,27.18,0.72,0.948,0.3431,False,0.4493,False
+Income group,Adherence ratio (%),Middle income,7785,60.7,All other person-years,20906,60.29,0.4,1.128,0.2595,False,0.3524,False
+Income group,% adherent (≥80%),Middle income,7785,27.54,All other person-years,20906,27.18,0.36,0.61,0.542,False,0.6457,False
+Income group,Adherence ratio (%),High income,10785,60.86,All other person-years,17906,60.13,0.73,2.215,0.0268,True,0.0447,True
+Income group,% adherent (≥80%),High income,10785,27.98,All other person-years,17906,26.85,1.13,2.079,0.0377,True,0.061,False
+Income group,Adherence ratio (%),Poor,4603,58.55,Near poor,1518,60.35,-1.8,-2.244,0.0249,True,0.0417,True
+Income group,% adherent (≥80%),Poor,4603,24.51,Near poor,1518,27.67,-3.16,-2.41,0.016,True,0.0287,True
+Income group,Adherence ratio (%),Poor,4603,58.55,Low income,4000,60.76,-2.21,-3.836,0.0001,True,0.0003,True
+Income group,% adherent (≥80%),Poor,4603,24.51,Low income,4000,27.9,-3.39,-3.568,0.0004,True,0.001,True
+Income group,Adherence ratio (%),Poor,4603,58.55,Middle income,7785,60.7,-2.15,-4.309,0.0,True,0.0,True
+Income group,% adherent (≥80%),Poor,4603,24.51,Middle income,7785,27.54,-3.03,-3.74,0.0002,True,0.0005,True
+Income group,Adherence ratio (%),Poor,4603,58.55,High income,10785,60.86,-2.31,-4.891,0.0,True,0.0,True
+Income group,% adherent (≥80%),Poor,4603,24.51,High income,10785,27.98,-3.48,-4.532,0.0,True,0.0,True
+Income group,Adherence ratio (%),Near poor,1518,60.35,Low income,4000,60.76,-0.41,-0.502,0.6159,False,0.7082,False
+Income group,% adherent (≥80%),Near poor,1518,27.67,Low income,4000,27.9,-0.23,-0.172,0.8635,False,0.9046,False
+Income group,Adherence ratio (%),Near poor,1518,60.35,Middle income,7785,60.7,-0.35,-0.455,0.6492,False,0.7387,False
+Income group,% adherent (≥80%),Near poor,1518,27.67,Middle income,7785,27.54,0.13,0.102,0.9189,False,0.9407,False
+Income group,Adherence ratio (%),Near poor,1518,60.35,High income,10785,60.86,-0.51,-0.68,0.4965,False,0.6137,False
+Income group,% adherent (≥80%),Near poor,1518,27.67,High income,10785,27.98,-0.32,-0.257,0.7973,False,0.8542,False
+Income group,Adherence ratio (%),Low income,4000,60.76,Middle income,7785,60.7,0.06,0.12,0.9047,False,0.9359,False
+Income group,% adherent (≥80%),Low income,4000,27.9,Middle income,7785,27.54,0.36,0.413,0.6797,False,0.7618,False
+Income group,Adherence ratio (%),Low income,4000,60.76,High income,10785,60.86,-0.1,-0.198,0.843,False,0.8888,False
+Income group,% adherent (≥80%),Low income,4000,27.9,High income,10785,27.98,-0.08,-0.1,0.9201,False,0.9407,False
+Income group,Adherence ratio (%),Middle income,7785,60.7,High income,10785,60.86,-0.16,-0.399,0.6898,False,0.769,False
+Income group,% adherent (≥80%),Middle income,7785,27.54,High income,10785,27.98,-0.44,-0.666,0.5056,False,0.618,False
+Insurance,Adherence ratio (%),Private,15961,60.14,All other person-years,12730,60.73,-0.58,-1.831,0.0671,False,0.1035,False
+Insurance,% adherent (≥80%),Private,15961,27.59,All other person-years,12730,26.89,0.7,1.318,0.1876,False,0.2612,False
+Insurance,Adherence ratio (%),Public,11990,61.25,All other person-years,16701,59.8,1.45,4.541,0.0,True,0.0,True
+Insurance,% adherent (≥80%),Public,11990,27.24,All other person-years,16701,27.3,-0.06,-0.121,0.9039,False,0.9359,False
+Insurance,Adherence ratio (%),Uninsured,740,52.28,All other person-years,27951,60.62,-8.34,-7.675,0.0,True,0.0,True
+Insurance,% adherent (≥80%),Uninsured,740,21.22,All other person-years,27951,27.44,-6.22,-4.073,0.0001,True,0.0003,True
+Insurance,Adherence ratio (%),Private,15961,60.14,Public,11990,61.25,-1.11,-3.426,0.0006,True,0.0014,True
+Insurance,% adherent (≥80%),Private,15961,27.59,Public,11990,27.24,0.35,0.643,0.5201,False,0.6287,False
+Insurance,Adherence ratio (%),Private,15961,60.14,Uninsured,740,52.28,7.86,7.175,0.0,True,0.0,True
+Insurance,% adherent (≥80%),Private,15961,27.59,Uninsured,740,21.22,6.37,4.123,0.0,True,0.0,True
+Insurance,Adherence ratio (%),Public,11990,61.25,Uninsured,740,52.28,8.97,8.148,0.0,True,0.0,True
+Insurance,% adherent (≥80%),Public,11990,27.24,Uninsured,740,21.22,6.02,3.866,0.0001,True,0.0003,True
+Cost share,Adherence ratio (%),≤5% OOP,9482,59.17,All other person-years,19209,61.02,-1.85,-5.443,0.0,True,0.0,True
+Cost share,% adherent (≥80%),≤5% OOP,9482,25.94,All other person-years,19209,27.93,-1.99,-3.591,0.0003,True,0.0007,True
+Cost share,Adherence ratio (%),5–25% OOP,5993,60.92,All other person-years,22698,60.27,0.65,1.727,0.0842,False,0.1257,False
+Cost share,% adherent (≥80%),5–25% OOP,5993,26.08,All other person-years,22698,27.59,-1.51,-2.363,0.0182,True,0.0321,True
+Cost share,Adherence ratio (%),25–50% OOP,3285,62.96,All other person-years,25406,60.07,2.89,6.127,0.0,True,0.0,True
+Cost share,% adherent (≥80%),25–50% OOP,3285,28.07,All other person-years,25406,27.17,0.89,1.072,0.2837,False,0.379,False
+Cost share,Adherence ratio (%),50–75% OOP,2297,63.37,All other person-years,26394,60.15,3.22,5.645,0.0,True,0.0,True
+Cost share,% adherent (≥80%),50–75% OOP,2297,31.21,All other person-years,26394,26.93,4.28,4.26,0.0,True,0.0,True
+Cost share,Adherence ratio (%),>75% OOP,7634,59.55,All other person-years,21057,60.72,-1.17,-3.123,0.0018,True,0.0039,True
+Cost share,% adherent (≥80%),>75% OOP,7634,28.35,All other person-years,21057,26.89,1.46,2.432,0.015,True,0.0272,True
+Cost share,Adherence ratio (%),≤5% OOP,9482,59.17,5–25% OOP,5993,60.92,-1.75,-4.059,0.0,True,0.0,True
+Cost share,% adherent (≥80%),≤5% OOP,9482,25.94,5–25% OOP,5993,26.08,-0.14,-0.189,0.8505,False,0.8938,False
+Cost share,Adherence ratio (%),≤5% OOP,9482,59.17,25–50% OOP,3285,62.96,-3.8,-7.289,0.0,True,0.0,True
+Cost share,% adherent (≥80%),≤5% OOP,9482,25.94,25–50% OOP,3285,28.07,-2.12,-2.348,0.0189,True,0.0328,True
+Cost share,Adherence ratio (%),≤5% OOP,9482,59.17,50–75% OOP,2297,63.37,-4.2,-6.853,0.0,True,0.0,True
+Cost share,% adherent (≥80%),≤5% OOP,9482,25.94,50–75% OOP,2297,31.21,-5.27,-4.941,0.0,True,0.0,True
+Cost share,Adherence ratio (%),≤5% OOP,9482,59.17,>75% OOP,7634,59.55,-0.38,-0.885,0.376,False,0.4791,False
+Cost share,% adherent (≥80%),≤5% OOP,9482,25.94,>75% OOP,7634,28.35,-2.4,-3.51,0.0004,True,0.001,True
+Cost share,Adherence ratio (%),5–25% OOP,5993,60.92,25–50% OOP,3285,62.96,-2.05,-3.725,0.0002,True,0.0005,True
+Cost share,% adherent (≥80%),5–25% OOP,5993,26.08,25–50% OOP,3285,28.07,-1.99,-2.053,0.0401,True,0.0646,False
+Cost share,Adherence ratio (%),5–25% OOP,5993,60.92,50–75% OOP,2297,63.37,-2.45,-3.843,0.0001,True,0.0003,True
+Cost share,% adherent (≥80%),5–25% OOP,5993,26.08,50–75% OOP,2297,31.21,-5.13,-4.58,0.0,True,0.0,True
+Cost share,Adherence ratio (%),5–25% OOP,5993,60.92,>75% OOP,7634,59.55,1.37,2.955,0.0031,True,0.0064,True
+Cost share,% adherent (≥80%),5–25% OOP,5993,26.08,>75% OOP,7634,28.35,-2.27,-2.956,0.0031,True,0.0064,True
+Cost share,Adherence ratio (%),25–50% OOP,3285,62.96,50–75% OOP,2297,63.37,-0.4,-0.573,0.5664,False,0.6675,False
+Cost share,% adherent (≥80%),25–50% OOP,3285,28.07,50–75% OOP,2297,31.21,-3.15,-2.528,0.0115,True,0.0213,True
+Cost share,Adherence ratio (%),25–50% OOP,3285,62.96,>75% OOP,7634,59.55,3.42,6.233,0.0,True,0.0,True
+Cost share,% adherent (≥80%),25–50% OOP,3285,28.07,>75% OOP,7634,28.35,-0.28,-0.298,0.7655,False,0.8255,False
+Cost share,Adherence ratio (%),50–75% OOP,2297,63.37,>75% OOP,7634,59.55,3.82,6.004,0.0,True,0.0,True
+Cost share,% adherent (≥80%),50–75% OOP,2297,31.21,>75% OOP,7634,28.35,2.87,2.617,0.0089,True,0.0171,True
+Delayed meds (cost),Adherence ratio (%),Delayed meds for cost,1395,57.14,All other person-years,27296,60.57,-3.43,-4.79,0.0,True,0.0,True
+Delayed meds (cost),% adherent (≥80%),Delayed meds for cost,1395,21.72,All other person-years,27296,27.56,-5.84,-5.137,0.0,True,0.0,True
+Delayed meds (cost),Adherence ratio (%),No delay,27296,60.57,All other person-years,1395,57.14,3.43,4.79,0.0,True,0.0,True
+Delayed meds (cost),% adherent (≥80%),No delay,27296,27.56,All other person-years,1395,21.72,5.84,5.137,0.0,True,0.0,True
+Delayed meds (cost),Adherence ratio (%),Delayed meds for cost,1395,57.14,No delay,27296,60.57,-3.43,-4.79,0.0,True,0.0,True
+Delayed meds (cost),% adherent (≥80%),Delayed meds for cost,1395,21.72,No delay,27296,27.56,-5.84,-5.137,0.0,True,0.0,True
+Delayed care (cost),Adherence ratio (%),Delayed care for cost,2043,57.92,All other person-years,26648,60.59,-2.67,-4.299,0.0,True,0.0,True
+Delayed care (cost),% adherent (≥80%),Delayed care for cost,2043,24.13,All other person-years,26648,27.52,-3.39,-3.436,0.0006,True,0.0014,True
+Delayed care (cost),Adherence ratio (%),No delay,26648,60.59,All other person-years,2043,57.92,2.67,4.299,0.0,True,0.0,True
+Delayed care (cost),% adherent (≥80%),No delay,26648,27.52,All other person-years,2043,24.13,3.39,3.436,0.0006,True,0.0014,True
+Delayed care (cost),Adherence ratio (%),Delayed care for cost,2043,57.92,No delay,26648,60.59,-2.67,-4.299,0.0,True,0.0,True
+Delayed care (cost),% adherent (≥80%),Delayed care for cost,2043,24.13,No delay,26648,27.52,-3.39,-3.436,0.0006,True,0.0014,True
+# meds,Adherence ratio (%),1 med,11185,56.13,All other person-years,17506,63.13,-7.0,-20.21,0.0,True,0.0,True
+# meds,% adherent (≥80%),1 med,11185,28.75,All other person-years,17506,26.33,2.42,4.461,0.0,True,0.0,True
+# meds,Adherence ratio (%),2 meds,6412,60.86,All other person-years,22279,60.27,0.59,1.595,0.1108,False,0.1625,False
+# meds,% adherent (≥80%),2 meds,6412,25.97,All other person-years,22279,27.65,-1.69,-2.702,0.0069,True,0.0133,True
+# meds,Adherence ratio (%),3 meds,4271,62.92,All other person-years,24420,59.96,2.96,7.455,0.0,True,0.0,True
+# meds,% adherent (≥80%),3 meds,4271,26.46,All other person-years,24420,27.42,-0.96,-1.313,0.1891,False,0.2622,False
+# meds,Adherence ratio (%),4 meds,2679,64.62,All other person-years,26012,59.97,4.65,10.43,0.0,True,0.0,True
+# meds,% adherent (≥80%),4 meds,2679,27.03,All other person-years,26012,27.3,-0.28,-0.308,0.758,False,0.8201,False
+# meds,Adherence ratio (%),5+ meds,4144,65.9,All other person-years,24547,59.48,6.43,18.507,0.0,True,0.0,True
+# meds,% adherent (≥80%),5+ meds,4144,26.33,All other person-years,24547,27.44,-1.11,-1.498,0.1343,False,0.1927,False
+# meds,Adherence ratio (%),1 med,11185,56.13,2 meds,6412,60.86,-4.73,-10.773,0.0,True,0.0,True
+# meds,% adherent (≥80%),1 med,11185,28.75,2 meds,6412,25.97,2.79,4.008,0.0001,True,0.0003,True
+# meds,Adherence ratio (%),1 med,11185,56.13,3 meds,4271,62.92,-6.79,-14.618,0.0,True,0.0,True
+# meds,% adherent (≥80%),1 med,11185,28.75,3 meds,4271,26.46,2.3,2.872,0.0041,True,0.0083,True
+# meds,Adherence ratio (%),1 med,11185,56.13,4 meds,2679,64.62,-8.48,-16.672,0.0,True,0.0,True
+# meds,% adherent (≥80%),1 med,11185,28.75,4 meds,2679,27.03,1.73,1.802,0.0717,False,0.1101,False
+# meds,Adherence ratio (%),1 med,11185,56.13,5+ meds,4144,65.9,-9.77,-23.147,0.0,True,0.0,True
+# meds,% adherent (≥80%),1 med,11185,28.75,5+ meds,4144,26.33,2.43,3.005,0.0027,True,0.0057,True
+# meds,Adherence ratio (%),2 meds,6412,60.86,3 meds,4271,62.92,-2.06,-4.297,0.0,True,0.0,True
+# meds,% adherent (≥80%),2 meds,6412,25.97,3 meds,4271,26.46,-0.49,-0.564,0.5725,False,0.6686,False
+# meds,Adherence ratio (%),2 meds,6412,60.86,4 meds,2679,64.62,-3.75,-7.19,0.0,True,0.0,True
+# meds,% adherent (≥80%),2 meds,6412,25.97,4 meds,2679,27.03,-1.06,-1.039,0.2987,False,0.3959,False
+# meds,Adherence ratio (%),2 meds,6412,60.86,5+ meds,4144,65.9,-5.04,-11.506,0.0,True,0.0,True
+# meds,% adherent (≥80%),2 meds,6412,25.97,5+ meds,4144,26.33,-0.36,-0.411,0.681,False,0.7618,False
+# meds,Adherence ratio (%),3 meds,4271,62.92,4 meds,2679,64.62,-1.7,-3.121,0.0018,True,0.0039,True
+# meds,% adherent (≥80%),3 meds,4271,26.46,4 meds,2679,27.03,-0.57,-0.52,0.6032,False,0.6984,False
+# meds,Adherence ratio (%),3 meds,4271,62.92,5+ meds,4144,65.9,-2.98,-6.435,0.0,True,0.0,True
+# meds,% adherent (≥80%),3 meds,4271,26.46,5+ meds,4144,26.33,0.13,0.136,0.8922,False,0.9317,False
+# meds,Adherence ratio (%),4 meds,2679,64.62,5+ meds,4144,65.9,-1.29,-2.531,0.0114,True,0.0213,True
+# meds,% adherent (≥80%),4 meds,2679,27.03,5+ meds,4144,26.33,0.7,0.636,0.5249,False,0.6322,False
+# conditions,Adherence ratio (%),1 condition,13633,57.09,All other person-years,15058,63.4,-6.31,-19.647,0.0,True,0.0,True
+# conditions,% adherent (≥80%),1 condition,13633,28.15,All other person-years,15058,26.48,1.67,3.165,0.0016,True,0.0035,True
+# conditions,Adherence ratio (%),2 conditions,7548,61.43,All other person-years,21143,60.04,1.39,4.057,0.0,True,0.0,True
+# conditions,% adherent (≥80%),2 conditions,7548,25.6,All other person-years,21143,27.88,-2.28,-3.869,0.0001,True,0.0003,True
+# conditions,Adherence ratio (%),3 conditions,4161,65.01,All other person-years,24530,59.62,5.39,14.043,0.0,True,0.0,True
+# conditions,% adherent (≥80%),3 conditions,4161,28.33,All other person-years,24530,27.1,1.24,1.641,0.101,False,0.1495,False
+# conditions,Adherence ratio (%),4+ conditions,3349,65.86,All other person-years,25342,59.68,6.17,16.397,0.0,True,0.0,True
+# conditions,% adherent (≥80%),4+ conditions,3349,26.19,All other person-years,25342,27.42,-1.23,-1.524,0.1277,False,0.1848,False
+# conditions,Adherence ratio (%),1 condition,13633,57.09,2 conditions,7548,61.43,-4.33,-11.24,0.0,True,0.0,True
+# conditions,% adherent (≥80%),1 condition,13633,28.15,2 conditions,7548,25.6,2.56,4.038,0.0001,True,0.0003,True
+# conditions,Adherence ratio (%),1 condition,13633,57.09,3 conditions,4161,65.01,-7.92,-18.439,0.0,True,0.0,True
+# conditions,% adherent (≥80%),1 condition,13633,28.15,3 conditions,4161,28.33,-0.18,-0.228,0.8193,False,0.8722,False
+# conditions,Adherence ratio (%),1 condition,13633,57.09,4+ conditions,3349,65.86,-8.76,-20.675,0.0,True,0.0,True
+# conditions,% adherent (≥80%),1 condition,13633,28.15,4+ conditions,3349,26.19,1.97,2.307,0.0211,True,0.0359,True
+# conditions,Adherence ratio (%),2 conditions,7548,61.43,3 conditions,4161,65.01,-3.59,-8.094,0.0,True,0.0,True
+# conditions,% adherent (≥80%),2 conditions,7548,25.6,3 conditions,4161,28.33,-2.74,-3.182,0.0015,True,0.0033,True
+# conditions,Adherence ratio (%),2 conditions,7548,61.43,4+ conditions,3349,65.86,-4.43,-10.124,0.0,True,0.0,True
+# conditions,% adherent (≥80%),2 conditions,7548,25.6,4+ conditions,3349,26.19,-0.59,-0.649,0.5167,False,0.6269,False
+# conditions,Adherence ratio (%),3 conditions,4161,65.01,4+ conditions,3349,65.86,-0.84,-1.77,0.0768,False,0.1157,False
+# conditions,% adherent (≥80%),3 conditions,4161,28.33,4+ conditions,3349,26.19,2.15,2.081,0.0375,True,0.061,False
+Dosing frequency,Adherence ratio (%),1x_daily,13263,60.25,All other person-years,15416,60.55,-0.3,-0.937,0.3487,False,0.4548,False
+Dosing frequency,% adherent (≥80%),1x_daily,13263,27.9,All other person-years,15416,26.74,1.17,2.209,0.0272,True,0.0451,True
+Dosing frequency,Adherence ratio (%),2x_daily,13143,61.15,All other person-years,15536,59.78,1.37,4.321,0.0,True,0.0,True
+Dosing frequency,% adherent (≥80%),2x_daily,13143,26.62,All other person-years,15536,27.83,-1.21,-2.294,0.0218,True,0.0369,True
+Dosing frequency,Adherence ratio (%),3x_daily,1837,57.77,All other person-years,26842,60.59,-2.82,-4.073,0.0,True,0.0,True
+Dosing frequency,% adherent (≥80%),3x_daily,1837,27.87,All other person-years,26842,27.24,0.63,0.587,0.5574,False,0.6593,False
+Dosing frequency,Adherence ratio (%),4x_plus,436,54.04,All other person-years,28243,60.51,-6.47,-4.339,0.0,True,0.0,True
+Dosing frequency,% adherent (≥80%),4x_plus,436,25.46,All other person-years,28243,27.31,-1.85,-0.877,0.3808,False,0.4833,False
+Dosing frequency,Adherence ratio (%),1x_daily,13263,60.25,2x_daily,13143,61.15,-0.9,-2.749,0.006,True,0.0117,True
+Dosing frequency,% adherent (≥80%),1x_daily,13263,27.9,2x_daily,13143,26.62,1.28,2.34,0.0193,True,0.0333,True
+Dosing frequency,Adherence ratio (%),1x_daily,13263,60.25,3x_daily,1837,57.77,2.47,3.468,0.0005,True,0.0012,True
+Dosing frequency,% adherent (≥80%),1x_daily,13263,27.9,3x_daily,1837,27.87,0.03,0.03,0.9763,False,0.9823,False
+Dosing frequency,Adherence ratio (%),1x_daily,13263,60.25,4x_plus,436,54.04,6.21,4.135,0.0,True,0.0,True
+Dosing frequency,% adherent (≥80%),1x_daily,13263,27.9,4x_plus,436,25.46,2.45,1.151,0.2502,False,0.3426,False
+Dosing frequency,Adherence ratio (%),2x_daily,13143,61.15,3x_daily,1837,57.77,3.38,4.77,0.0,True,0.0,True
+Dosing frequency,% adherent (≥80%),2x_daily,13143,26.62,3x_daily,1837,27.87,-1.25,-1.12,0.2628,False,0.354,False
+Dosing frequency,Adherence ratio (%),2x_daily,13143,61.15,4x_plus,436,54.04,7.11,4.745,0.0,True,0.0,True
+Dosing frequency,% adherent (≥80%),2x_daily,13143,26.62,4x_plus,436,25.46,1.16,0.548,0.584,False,0.6786,False
+Dosing frequency,Adherence ratio (%),3x_daily,1837,57.77,4x_plus,436,54.04,3.73,2.295,0.0221,True,0.0372,True
+Dosing frequency,% adherent (≥80%),3x_daily,1837,27.87,4x_plus,436,25.46,2.41,1.033,0.3021,False,0.3988,False
+Dose quartile,Adherence ratio (%),Q1 (lowest),7058,60.22,All other person-years,21167,60.66,-0.44,-1.14,0.2543,False,0.3468,False
+Dose quartile,% adherent (≥80%),Q1 (lowest),7058,28.63,All other person-years,21167,26.91,1.72,2.788,0.0053,True,0.0105,True
+Dose quartile,Adherence ratio (%),Q2,7061,60.54,All other person-years,21164,60.56,-0.02,-0.05,0.9597,False,0.9715,False
+Dose quartile,% adherent (≥80%),Q2,7061,27.02,All other person-years,21164,27.45,-0.43,-0.697,0.4859,False,0.6028,False
+Dose quartile,Adherence ratio (%),Q3,7050,61.07,All other person-years,21175,60.38,0.69,1.931,0.0535,False,0.0837,False
+Dose quartile,% adherent (≥80%),Q3,7050,26.71,All other person-years,21175,27.55,-0.84,-1.381,0.1674,False,0.2371,False
+Dose quartile,Adherence ratio (%),Q4 (highest),7056,60.37,All other person-years,21169,60.61,-0.24,-0.649,0.5164,False,0.6269,False
+Dose quartile,% adherent (≥80%),Q4 (highest),7056,27.0,All other person-years,21169,27.46,-0.46,-0.748,0.4546,False,0.5704,False
+Dose quartile,Adherence ratio (%),Q1 (lowest),7058,60.22,Q2,7061,60.54,-0.31,-0.676,0.4992,False,0.6138,False
+Dose quartile,% adherent (≥80%),Q1 (lowest),7058,28.63,Q2,7061,27.02,1.61,2.138,0.0325,True,0.0534,False
+Dose quartile,Adherence ratio (%),Q1 (lowest),7058,60.22,Q3,7050,61.07,-0.85,-1.861,0.0628,False,0.0973,False
+Dose quartile,% adherent (≥80%),Q1 (lowest),7058,28.63,Q3,7050,26.71,1.92,2.556,0.0106,True,0.0201,True
+Dose quartile,Adherence ratio (%),Q1 (lowest),7058,60.22,Q4 (highest),7056,60.37,-0.15,-0.319,0.7494,False,0.8162,False
+Dose quartile,% adherent (≥80%),Q1 (lowest),7058,28.63,Q4 (highest),7056,27.0,1.64,2.169,0.0301,True,0.0497,True
+Dose quartile,Adherence ratio (%),Q2,7061,60.54,Q3,7050,61.07,-0.53,-1.209,0.2265,False,0.3114,False
+Dose quartile,% adherent (≥80%),Q2,7061,27.02,Q3,7050,26.71,0.31,0.419,0.6755,False,0.7608,False
+Dose quartile,Adherence ratio (%),Q2,7061,60.54,Q4 (highest),7056,60.37,0.17,0.367,0.7135,False,0.7875,False
+Dose quartile,% adherent (≥80%),Q2,7061,27.02,Q4 (highest),7056,27.0,0.02,0.031,0.9751,False,0.9823,False
+Dose quartile,Adherence ratio (%),Q3,7050,61.07,Q4 (highest),7056,60.37,0.7,1.584,0.1133,False,0.1654,False
+Dose quartile,% adherent (≥80%),Q3,7050,26.71,Q4 (highest),7056,27.0,-0.29,-0.387,0.6985,False,0.7761,False
+Region,Adherence ratio (%),Northeast,4001,61.34,All other person-years,24690,60.25,1.08,2.333,0.0197,True,0.0337,True
+Region,% adherent (≥80%),Northeast,4001,28.99,All other person-years,24690,27.0,1.99,2.586,0.0097,True,0.0185,True
+Region,Adherence ratio (%),Midwest,6588,63.22,All other person-years,22103,59.57,3.65,9.812,0.0,True,0.0,True
+Region,% adherent (≥80%),Midwest,6588,30.4,All other person-years,22103,26.34,4.06,6.346,0.0,True,0.0,True
+Region,Adherence ratio (%),South,11012,58.76,All other person-years,17679,61.43,-2.66,-8.138,0.0,True,0.0,True
+Region,% adherent (≥80%),South,11012,25.09,All other person-years,17679,28.64,-3.55,-6.63,0.0,True,0.0,True
+Region,Adherence ratio (%),West,7090,59.81,All other person-years,21601,60.6,-0.79,-2.132,0.033,True,0.0539,False
+Region,% adherent (≥80%),West,7090,26.8,All other person-years,21601,27.43,-0.64,-1.047,0.2953,False,0.3929,False
+Region,Adherence ratio (%),Northeast,4001,61.34,Midwest,6588,63.22,-1.88,-3.484,0.0005,True,0.0012,True
+Region,% adherent (≥80%),Northeast,4001,28.99,Midwest,6588,30.4,-1.41,-1.543,0.1228,False,0.1785,False
+Region,Adherence ratio (%),Northeast,4001,61.34,South,11012,58.76,2.57,5.12,0.0,True,0.0,True
+Region,% adherent (≥80%),Northeast,4001,28.99,South,11012,25.09,3.9,4.713,0.0,True,0.0,True
+Region,Adherence ratio (%),Northeast,4001,61.34,West,7090,59.81,1.53,2.834,0.0046,True,0.0091,True
+Region,% adherent (≥80%),Northeast,4001,28.99,West,7090,26.8,2.19,2.467,0.0137,True,0.0253,True
+Region,Adherence ratio (%),Midwest,6588,63.22,South,11012,58.76,4.45,10.764,0.0,True,0.0,True
+Region,% adherent (≥80%),Midwest,6588,30.4,South,11012,25.09,5.31,7.575,0.0,True,0.0,True
+Region,Adherence ratio (%),Midwest,6588,63.22,West,7090,59.81,3.41,7.448,0.0,True,0.0,True
+Region,% adherent (≥80%),Midwest,6588,30.4,West,7090,26.8,3.61,4.663,0.0,True,0.0,True
+Region,Adherence ratio (%),South,11012,58.76,West,7090,59.81,-1.04,-2.531,0.0114,True,0.0213,True
+Region,% adherent (≥80%),South,11012,25.09,West,7090,26.8,-1.71,-2.553,0.0107,True,0.0202,True
+Survey year,Adherence ratio (%),2020,7718,61.61,All other person-years,20973,59.96,1.65,4.569,0.0,True,0.0,True
+Survey year,% adherent (≥80%),2020,7718,29.49,All other person-years,20973,26.46,3.03,5.029,0.0,True,0.0,True
+Survey year,Adherence ratio (%),2021,8377,60.32,All other person-years,20314,60.44,-0.12,-0.345,0.73,False,0.7977,False
+Survey year,% adherent (≥80%),2021,8377,26.58,All other person-years,20314,27.56,-0.98,-1.698,0.0895,False,0.133,False
+Survey year,Adherence ratio (%),2022,6770,60.17,All other person-years,21921,60.48,-0.31,-0.831,0.4058,False,0.5111,False
+Survey year,% adherent (≥80%),2022,6770,27.24,All other person-years,21921,27.29,-0.05,-0.083,0.9342,False,0.9515,False
+Survey year,Adherence ratio (%),2023,5826,59.21,All other person-years,22865,60.71,-1.5,-3.819,0.0001,True,0.0003,True
+Survey year,% adherent (≥80%),2023,5826,25.39,All other person-years,22865,27.76,-2.37,-3.692,0.0002,True,0.0005,True
+Survey year,Adherence ratio (%),2020,7718,61.61,2021,8377,60.32,1.29,3.033,0.0024,True,0.0051,True
+Survey year,% adherent (≥80%),2020,7718,29.49,2021,8377,26.58,2.9,4.098,0.0,True,0.0,True
+Survey year,Adherence ratio (%),2020,7718,61.61,2022,6770,60.17,1.45,3.198,0.0014,True,0.0031,True
+Survey year,% adherent (≥80%),2020,7718,29.49,2022,6770,27.24,2.25,3.003,0.0027,True,0.0057,True
+Survey year,Adherence ratio (%),2020,7718,61.61,2023,5826,59.21,2.41,5.135,0.0,True,0.0,True
+Survey year,% adherent (≥80%),2020,7718,29.49,2023,5826,25.39,4.1,5.321,0.0,True,0.0,True
+Survey year,Adherence ratio (%),2021,8377,60.32,2022,6770,60.17,0.15,0.349,0.7268,False,0.7968,False
+Survey year,% adherent (≥80%),2021,8377,26.58,2022,6770,27.24,-0.65,-0.901,0.3678,False,0.4704,False
+Survey year,Adherence ratio (%),2021,8377,60.32,2023,5826,59.21,1.11,2.439,0.0147,True,0.0268,True
+Survey year,% adherent (≥80%),2021,8377,26.58,2023,5826,25.39,1.2,1.604,0.1087,False,0.1601,False
+Survey year,Adherence ratio (%),2022,6770,60.17,2023,5826,59.21,0.96,1.996,0.0459,True,0.0725,False
+Survey year,% adherent (≥80%),2022,6770,27.24,2023,5826,25.39,1.85,2.355,0.0185,True,0.0325,True
