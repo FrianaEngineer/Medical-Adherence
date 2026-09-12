@@ -1798,8 +1798,6 @@ def transition_pct_heatmap(corr_pct: pd.DataFrame) -> go.Figure:
 # The notebook pools every survey year at a fixed 80% cut, so nothing in this
 # tab follows the sidebar year / threshold / filter controls.
 INSIGHTS_THRESHOLD = 80
-INSIGHTS_RATE_COL = f"% adherent (≥{INSIGHTS_THRESHOLD}%)"
-LEVEL_VS_REST = "All other person-years"
 TRAJECTORY_MARGIN_PP = 5
 TRAJECTORY_CLASSES = [
     "increasing",
@@ -1811,7 +1809,7 @@ TRAJECTORY_CLASSES = [
 ]
 TTESTS_CSV = f"person_year_ttests_{INSIGHTS_THRESHOLD}pct.csv"
 CHARACTERISTIC_SUMMARY_CSV = f"characteristic_summary_{INSIGHTS_THRESHOLD}pct.csv"
-# Test tallies and the q-value are covered on the Significant subgroups sub-tab.
+# Test tallies and the q-value are covered on the All t-tests sub-tab.
 CHARACTERISTIC_SUMMARY_DROP_COLS = [
     "N tests",
     "N significant (FDR)",
@@ -1826,48 +1824,6 @@ TRAJECTORY_CSV = (
 def load_insight_table(name: str) -> pd.DataFrame | None:
     """Read one notebook export from ``output/all_years/tables``."""
     return load_table("all_years", name)
-
-
-def significant_levels_table(ttests: pd.DataFrame) -> pd.DataFrame:
-    """Level-vs-rest gaps surviving FDR, with the Welch statistics kept alongside.
-
-    Same rows as the notebook's ``significant_level_vs_rest`` export; ``t`` and
-    ``p`` are carried through from the test table instead of being dropped.
-    """
-    sig = ttests[
-        (ttests["Outcome"] == INSIGHTS_RATE_COL)
-        & (ttests["Group B"] == LEVEL_VS_REST)
-        & ttests["Significant (FDR<0.05)"]
-    ]
-    return (
-        sig.sort_values("Diff (A−B)", key=abs, ascending=False)
-        .loc[
-            :,
-            [
-                "Characteristic",
-                "Group A",
-                "N_A",
-                "Mean_A",
-                "N_B",
-                "Mean_B",
-                "Diff (A−B)",
-                "t",
-                "p",
-                "q (BH-FDR)",
-            ],
-        ]
-        .rename(
-            columns={
-                "Group A": "Level",
-                "N_A": "N (person-years)",
-                "Mean_A": INSIGHTS_RATE_COL,
-                "N_B": "N (all others)",
-                "Mean_B": "All others",
-                "Diff (A−B)": "Gap (pp)",
-            }
-        )
-        .reset_index(drop=True)
-    )
 
 
 def trajectory_class_tables(
@@ -2978,82 +2934,14 @@ with tab_insights:
             "`Notebooks/MEPS/medical_80%_adherence_insights.ipynb` to export them."
         )
     else:
-        ins_sig, ins_char, ins_all, ins_traj = st.tabs(
-            [
-                "Significant subgroups",
-                "By characteristic",
-                "All t-tests",
-                "Trajectories",
-            ]
+        ins_char, ins_all, ins_traj = st.tabs(
+            ["By characteristic", "All t-tests", "Trajectories"]
         )
 
         pct_col = st.column_config.NumberColumn(format="%.2f")
         n_col = st.column_config.NumberColumn(format="%d")
         stat_col = st.column_config.NumberColumn(format="%.3f")
         p_col = st.column_config.NumberColumn(format="%.4f")
-
-        # -- Significant subgroups ------------------------------------------
-        with ins_sig:
-            if insight_ttests is None:
-                st.warning(f"`{TTESTS_CSV}` not found — rerun the notebook.")
-            else:
-                sig_levels = significant_levels_table(insight_ttests)
-                n_rate_tests = int(
-                    (
-                        (insight_ttests["Outcome"] == INSIGHTS_RATE_COL)
-                        & (insight_ttests["Group B"] == LEVEL_VS_REST)
-                    ).sum()
-                )
-
-                st.subheader("Subgroups whose adherent rate differs from everyone else")
-                st.markdown(
-                    f"""
-- Each level (Under 30, Uninsured, Black only, …) is compared with **all other
-  person-years** using a Welch t-test on the 0/1 "adherent at ≥{INSIGHTS_THRESHOLD}%" flag.
-- **Gap (pp)** is the level's adherent rate minus the rate for everyone else, in
-  percentage points. Negative means the subgroup is *less* adherent.
-- **q (BH-FDR)** is the Benjamini–Hochberg adjusted p-value; only rows with
-  **q < 0.05** are listed, so these survive correction for all
-  {len(insight_ttests):,} tests run in the notebook.
-                    """
-                )
-
-                m1, m2, m3 = st.columns(3)
-                m1.metric("Level-vs-rest rate tests", f"{n_rate_tests}")
-                m2.metric("Surviving FDR", f"{len(sig_levels)}")
-                m3.metric(
-                    "Characteristics involved",
-                    f"{sig_levels['Characteristic'].nunique()}",
-                )
-
-                choices = ["All characteristics", *sorted(sig_levels["Characteristic"].unique())]
-                pick = st.selectbox(
-                    "Characteristic", choices, key="insights_sig_characteristic"
-                )
-                shown = (
-                    sig_levels
-                    if pick == "All characteristics"
-                    else sig_levels[sig_levels["Characteristic"] == pick]
-                )
-                st.dataframe(
-                    shown,
-                    use_container_width=True,
-                    hide_index=True,
-                    column_config={
-                        "N (person-years)": n_col,
-                        "N (all others)": n_col,
-                        INSIGHTS_RATE_COL: pct_col,
-                        "All others": pct_col,
-                        "Gap (pp)": pct_col,
-                        "t": stat_col,
-                        "p": p_col,
-                        "q (BH-FDR)": p_col,
-                    },
-                )
-                st.caption(
-                    f"{len(shown):,} significant levels, largest gap first · "
-                    "`p` and `q` shown to 4 decimals, so 0.0000 means < 0.00005."
-                )
 
         # -- By characteristic ---------------------------------------------
         with ins_char:
