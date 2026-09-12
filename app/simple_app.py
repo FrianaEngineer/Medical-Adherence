@@ -1791,6 +1791,142 @@ def transition_pct_heatmap(corr_pct: pd.DataFrame) -> go.Figure:
 
 
 # ---------------------------------------------------------------------------
+# Insights tab — tables exported by
+# Notebooks/MEPS/medical_80%_adherence_insights.ipynb
+# ---------------------------------------------------------------------------
+
+# The notebook pools every survey year at a fixed 80% cut, so nothing in this
+# tab follows the sidebar year / threshold / filter controls.
+INSIGHTS_THRESHOLD = 80
+INSIGHTS_RATE_COL = f"% adherent (≥{INSIGHTS_THRESHOLD}%)"
+LEVEL_VS_REST = "All other person-years"
+TRAJECTORY_MARGIN_PP = 5
+TRAJECTORY_CLASSES = [
+    "increasing",
+    "decreasing",
+    "recovering",
+    "relapsing",
+    "stable",
+    "insufficient_years",
+]
+TTESTS_CSV = f"person_year_ttests_{INSIGHTS_THRESHOLD}pct.csv"
+CHARACTERISTIC_SUMMARY_CSV = f"characteristic_summary_{INSIGHTS_THRESHOLD}pct.csv"
+TRAJECTORY_CSV = (
+    f"adherence_trajectories_{INSIGHTS_THRESHOLD}pct_margin{TRAJECTORY_MARGIN_PP}.csv"
+)
+
+
+def load_insight_table(name: str) -> pd.DataFrame | None:
+    """Read one notebook export from ``output/all_years/tables``."""
+    return load_table("all_years", name)
+
+
+def significant_levels_table(ttests: pd.DataFrame) -> pd.DataFrame:
+    """Level-vs-rest gaps surviving FDR, with the Welch statistics kept alongside.
+
+    Same rows as the notebook's ``significant_level_vs_rest`` export; ``t`` and
+    ``p`` are carried through from the test table instead of being dropped.
+    """
+    sig = ttests[
+        (ttests["Outcome"] == INSIGHTS_RATE_COL)
+        & (ttests["Group B"] == LEVEL_VS_REST)
+        & ttests["Significant (FDR<0.05)"]
+    ]
+    return (
+        sig.sort_values("Diff (A−B)", key=abs, ascending=False)
+        .loc[
+            :,
+            [
+                "Characteristic",
+                "Group A",
+                "N_A",
+                "Mean_A",
+                "N_B",
+                "Mean_B",
+                "Diff (A−B)",
+                "t",
+                "p",
+                "q (BH-FDR)",
+            ],
+        ]
+        .rename(
+            columns={
+                "Group A": "Level",
+                "N_A": "N (person-years)",
+                "Mean_A": INSIGHTS_RATE_COL,
+                "N_B": "N (all others)",
+                "Mean_B": "All others",
+                "Diff (A−B)": "Gap (pp)",
+            }
+        )
+        .reset_index(drop=True)
+    )
+
+
+def tests_by_characteristic(ttests: pd.DataFrame) -> pd.DataFrame:
+    """How many tests each characteristic × outcome ran, and how many landed."""
+    return (
+        ttests.groupby(["Characteristic", "Outcome"], observed=True)
+        .agg(
+            **{
+                "N tests": ("p", "size"),
+                "N sig (raw p)": ("Significant (p<0.05)", "sum"),
+                "N sig (FDR)": ("Significant (FDR<0.05)", "sum"),
+            }
+        )
+        .reset_index()
+    )
+
+
+def trajectory_class_tables(
+    person_traj: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame, int, int]:
+    """Rebuild the notebook's two trajectory tables from the per-person export."""
+    class_counts = (
+        person_traj["trajectory_class"]
+        .value_counts()
+        .reindex(TRAJECTORY_CLASSES)
+        .dropna()
+        .astype(int)
+        .rename("N people")
+        .to_frame()
+        .rename_axis("Trajectory")
+        .reset_index()
+    )
+    class_counts["% of all people"] = (
+        100 * class_counts["N people"] / class_counts["N people"].sum()
+    ).round(1)
+    classifiable = person_traj[person_traj["trajectory_class"] != "insufficient_years"]
+    class_counts["% of classifiable"] = (
+        100 * class_counts["N people"] / len(classifiable)
+    ).round(1)
+    class_counts.loc[
+        class_counts["Trajectory"] == "insufficient_years", "% of classifiable"
+    ] = np.nan
+
+    class_detail = (
+        classifiable.groupby("trajectory_class", observed=True)
+        .agg(
+            **{
+                "N people": ("DUPERSID", "size"),
+                "Mean years in run": ("n_years_in_run", "mean"),
+                "Mean first adherence": ("adh_first", "mean"),
+                "Mean last adherence": ("adh_last", "mean"),
+                "Mean total change (pp)": ("total_change_pp", "mean"),
+                "Mean largest move (pp)": ("max_abs_move_pp", "mean"),
+            }
+        )
+        .reindex([c for c in TRAJECTORY_CLASSES if c != "insufficient_years"])
+        .dropna(how="all")
+        .round(1)
+        .reset_index()
+        .rename(columns={"trajectory_class": "Trajectory"})
+    )
+    n_single = int((person_traj["trajectory_class"] == "insufficient_years").sum())
+    return class_counts, class_detail, len(classifiable), n_single
+
+
+# ---------------------------------------------------------------------------
 # Tabs
 # ---------------------------------------------------------------------------
 
@@ -1798,12 +1934,28 @@ def transition_pct_heatmap(corr_pct: pd.DataFrame) -> go.Figure:
 # Models is multi-year only (prior-year lag + 2021–2022 → 2023 holdout).
 _show_models_tab = year_selection == ALL_YEARS_LABEL
 if _show_models_tab:
-    tab_home, tab_analysis, tab_method, tab_viz, tab_models, tab_gates = st.tabs(
-        ["Home", "Analysis", "Methodology", "Visualization", "Models", "Gates"]
+    (
+        tab_home,
+        tab_analysis,
+        tab_method,
+        tab_viz,
+        tab_models,
+        tab_insights,
+        tab_gates,
+    ) = st.tabs(
+        [
+            "Home",
+            "Analysis",
+            "Methodology",
+            "Visualization",
+            "Models",
+            "Insights",
+            "Gates",
+        ]
     )
 else:
-    tab_home, tab_analysis, tab_method, tab_viz, tab_gates = st.tabs(
-        ["Home", "Analysis", "Methodology", "Visualization", "Gates"]
+    tab_home, tab_analysis, tab_method, tab_viz, tab_insights, tab_gates = st.tabs(
+        ["Home", "Analysis", "Methodology", "Visualization", "Insights", "Gates"]
     )
     tab_models = None
 
@@ -2812,6 +2964,277 @@ if tab_models is not None:
                                 "value", ascending=False
                             )
                             st.dataframe(nz, use_container_width=True)
+
+
+# ---- Insights -------------------------------------------------------------
+
+with tab_insights:
+    st.header("Insights · person-year t-tests, 2020–2023")
+    st.caption(
+        "Tables exported by `medical_80%_adherence_insights.ipynb`. The unit is one "
+        f"person-year, pooled across every survey year at a fixed ≥{INSIGHTS_THRESHOLD}% "
+        "adherence cut — the sidebar year, threshold, and filters do not apply here."
+    )
+
+    insight_ttests = load_insight_table(TTESTS_CSV)
+    insight_summary = load_insight_table(CHARACTERISTIC_SUMMARY_CSV)
+    insight_traj = load_insight_table(TRAJECTORY_CSV)
+
+    if insight_ttests is None and insight_traj is None:
+        st.warning(
+            "Insight tables not found in `output/all_years/tables` — run "
+            "`Notebooks/MEPS/medical_80%_adherence_insights.ipynb` to export them."
+        )
+    else:
+        ins_sig, ins_char, ins_all, ins_traj = st.tabs(
+            [
+                "Significant subgroups",
+                "By characteristic",
+                "All t-tests",
+                "Trajectories",
+            ]
+        )
+
+        pct_col = st.column_config.NumberColumn(format="%.2f")
+        n_col = st.column_config.NumberColumn(format="%d")
+        stat_col = st.column_config.NumberColumn(format="%.3f")
+        p_col = st.column_config.NumberColumn(format="%.4f")
+
+        # -- Significant subgroups ------------------------------------------
+        with ins_sig:
+            if insight_ttests is None:
+                st.warning(f"`{TTESTS_CSV}` not found — rerun the notebook.")
+            else:
+                sig_levels = significant_levels_table(insight_ttests)
+                n_rate_tests = int(
+                    (
+                        (insight_ttests["Outcome"] == INSIGHTS_RATE_COL)
+                        & (insight_ttests["Group B"] == LEVEL_VS_REST)
+                    ).sum()
+                )
+
+                st.subheader("Subgroups whose adherent rate differs from everyone else")
+                st.markdown(
+                    f"""
+- Each level (Under 30, Uninsured, Black only, …) is compared with **all other
+  person-years** using a Welch t-test on the 0/1 "adherent at ≥{INSIGHTS_THRESHOLD}%" flag.
+- **Gap (pp)** is the level's adherent rate minus the rate for everyone else, in
+  percentage points. Negative means the subgroup is *less* adherent.
+- **q (BH-FDR)** is the Benjamini–Hochberg adjusted p-value; only rows with
+  **q < 0.05** are listed, so these survive correction for all
+  {len(insight_ttests):,} tests run in the notebook.
+                    """
+                )
+
+                m1, m2, m3 = st.columns(3)
+                m1.metric("Level-vs-rest rate tests", f"{n_rate_tests}")
+                m2.metric("Surviving FDR", f"{len(sig_levels)}")
+                m3.metric(
+                    "Characteristics involved",
+                    f"{sig_levels['Characteristic'].nunique()}",
+                )
+
+                choices = ["All characteristics", *sorted(sig_levels["Characteristic"].unique())]
+                pick = st.selectbox(
+                    "Characteristic", choices, key="insights_sig_characteristic"
+                )
+                shown = (
+                    sig_levels
+                    if pick == "All characteristics"
+                    else sig_levels[sig_levels["Characteristic"] == pick]
+                )
+                st.dataframe(
+                    shown,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "N (person-years)": n_col,
+                        "N (all others)": n_col,
+                        INSIGHTS_RATE_COL: pct_col,
+                        "All others": pct_col,
+                        "Gap (pp)": pct_col,
+                        "t": stat_col,
+                        "p": p_col,
+                        "q (BH-FDR)": p_col,
+                    },
+                )
+                st.caption(
+                    f"{len(shown):,} significant levels, largest gap first · "
+                    "`p` and `q` shown to 4 decimals, so 0.0000 means < 0.00005."
+                )
+
+        # -- By characteristic ---------------------------------------------
+        with ins_char:
+            st.subheader("Which characteristics carry a significant result")
+            if insight_summary is None:
+                st.warning(f"`{CHARACTERISTIC_SUMMARY_CSV}` not found — rerun the notebook.")
+            else:
+                st.caption(
+                    "One row per characteristic: how many of its tests landed, plus the "
+                    "single strongest FDR-significant effect it produced."
+                )
+                st.dataframe(
+                    insight_summary,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "N tests": n_col,
+                        "N significant (FDR)": n_col,
+                        "N significant (raw p)": n_col,
+                        "N (person-years)": n_col,
+                        "Mean (level)": pct_col,
+                        "Mean (comparison)": pct_col,
+                        "Gap": pct_col,
+                        "q (BH-FDR)": p_col,
+                    },
+                )
+
+            if insight_ttests is not None:
+                st.subheader("Test counts by characteristic and outcome")
+                st.caption(
+                    "Every Welch test in the notebook, grouped by what was compared "
+                    "(the adherent rate, the raw adherence ratio, or a covariate)."
+                )
+                st.dataframe(
+                    tests_by_characteristic(insight_ttests),
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "N tests": n_col,
+                        "N sig (raw p)": n_col,
+                        "N sig (FDR)": n_col,
+                    },
+                )
+
+        # -- All t-tests ----------------------------------------------------
+        with ins_all:
+            st.subheader("Every Welch t-test")
+            if insight_ttests is None:
+                st.warning(f"`{TTESTS_CSV}` not found — rerun the notebook.")
+            else:
+                st.caption(
+                    "Includes the pairwise level-vs-level tests as well as level-vs-rest, "
+                    "for both the adherent rate and the continuous adherence ratio."
+                )
+                f1, f2, f3 = st.columns([2, 2, 1])
+                char_pick = f1.selectbox(
+                    "Characteristic",
+                    ["All", *sorted(insight_ttests["Characteristic"].unique())],
+                    key="insights_all_characteristic",
+                )
+                outcome_pick = f2.selectbox(
+                    "Outcome",
+                    ["All", *sorted(insight_ttests["Outcome"].unique())],
+                    key="insights_all_outcome",
+                )
+                fdr_only = f3.checkbox(
+                    "FDR-significant only", value=True, key="insights_all_fdr"
+                )
+
+                table = insight_ttests
+                if char_pick != "All":
+                    table = table[table["Characteristic"] == char_pick]
+                if outcome_pick != "All":
+                    table = table[table["Outcome"] == outcome_pick]
+                if fdr_only:
+                    table = table[table["Significant (FDR<0.05)"]]
+                table = table.sort_values(
+                    "Diff (A−B)", key=abs, ascending=False
+                ).reset_index(drop=True)
+
+                st.dataframe(
+                    table,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "N_A": n_col,
+                        "N_B": n_col,
+                        "Mean_A": pct_col,
+                        "Mean_B": pct_col,
+                        "Diff (A−B)": pct_col,
+                        "t": stat_col,
+                        "p": p_col,
+                        "q (BH-FDR)": p_col,
+                    },
+                )
+                st.caption(
+                    f"{len(table):,} of {len(insight_ttests):,} tests shown · "
+                    f"{int(insight_ttests['Significant (p<0.05)'].sum()):,} significant at "
+                    f"raw p<0.05 · "
+                    f"{int(insight_ttests['Significant (FDR<0.05)'].sum()):,} after BH-FDR."
+                )
+
+        # -- Trajectories ---------------------------------------------------
+        with ins_traj:
+            st.subheader("Five-point adherence trajectories")
+            if insight_traj is None:
+                st.warning(f"`{TRAJECTORY_CSV}` not found — rerun the notebook.")
+            else:
+                class_counts, class_detail, n_classifiable, n_single = (
+                    trajectory_class_tables(insight_traj)
+                )
+                st.caption(
+                    f"Each person is classified from their longest run of consecutive "
+                    f"years. Margin: moves within ±{TRAJECTORY_MARGIN_PP} pp count as flat. "
+                    f"People classified: {n_classifiable:,} with 2+ consecutive years | "
+                    f"{n_single:,} have only a single year and cannot be classified."
+                )
+                st.dataframe(
+                    class_counts,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "N people": n_col,
+                        "% of all people": st.column_config.NumberColumn(format="%.1f"),
+                        "% of classifiable": st.column_config.NumberColumn(format="%.1f"),
+                    },
+                )
+
+                st.markdown("##### What each class looks like")
+                st.dataframe(
+                    class_detail,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "N people": n_col,
+                        "Mean years in run": st.column_config.NumberColumn(format="%.1f"),
+                        "Mean first adherence": st.column_config.NumberColumn(format="%.1f"),
+                        "Mean last adherence": st.column_config.NumberColumn(format="%.1f"),
+                        "Mean total change (pp)": st.column_config.NumberColumn(format="%.1f"),
+                        "Mean largest move (pp)": st.column_config.NumberColumn(format="%.1f"),
+                    },
+                )
+                st.markdown(
+                    """
+- **increasing / decreasing** — every move clearing the margin goes the same way.
+- **recovering** — fell, then came back up and stayed up.
+- **relapsing** — rose then fell, or fell-rose-fell.
+- **stable** — no move clears the margin.
+                    """
+                )
+
+                with st.expander("Examples (up to 4 per class)"):
+                    for cls in [
+                        c for c in TRAJECTORY_CLASSES if c != "insufficient_years"
+                    ]:
+                        sample = insight_traj[insight_traj["trajectory_class"] == cls]
+                        if sample.empty:
+                            continue
+                        st.markdown(f"**{cls}** — sign pattern and path")
+                        st.dataframe(
+                            sample.sort_values("n_years_in_run", ascending=False)
+                            .head(4)[
+                                [
+                                    "DUPERSID",
+                                    "n_years_in_run",
+                                    "sign_pattern",
+                                    "adherence_path",
+                                ]
+                            ]
+                            .reset_index(drop=True),
+                            use_container_width=True,
+                            hide_index=True,
+                        )
 
 
 # ---- Gates ----------------------------------------------------------------

@@ -1,0 +1,18 @@
+Characteristic,N tests,N significant (FDR),N significant (raw p),Strongest effect: outcome,Level,Compared with,N (person-years),Mean (level),Mean (comparison),Gap,q (BH-FDR)
+Age group,12,12,12,% adherent (≥80%),Under 30,All other person-years,2328,19.93,27.93,-8.0,0.0
+Insurance,12,8,8,% adherent (≥80%),Uninsured,All other person-years,740,21.22,27.44,-6.22,0.0003
+Delayed meds (cost),6,6,6,% adherent (≥80%),Delayed meds for cost,All other person-years,1395,21.72,27.56,-5.84,0.0
+Race,30,18,19,% adherent (≥80%),Black only,All other person-years,3923,22.36,28.06,-5.7,0.0
+Cost share,30,23,24,% adherent (≥80%),50–75% OOP,All other person-years,2297,31.21,26.93,4.28,0.0
+Region,20,17,18,% adherent (≥80%),Midwest,All other person-years,6588,30.4,26.34,4.06,0.0
+Delayed care (cost),6,6,6,% adherent (≥80%),Delayed care for cost,All other person-years,2043,24.13,27.52,-3.39,0.0014
+Education,30,14,16,% adherent (≥80%),Less than high school,All other person-years,5023,24.61,27.91,-3.3,0.0
+Income group,30,11,12,% adherent (≥80%),Poor,All other person-years,4603,24.51,27.81,-3.3,0.0
+Marital status,30,14,15,% adherent (≥80%),Never married,All other person-years,4581,24.93,28.1,-3.17,0.0
+Survey year,20,12,13,% adherent (≥80%),2020,All other person-years,7718,29.49,26.46,3.03,0.0
+# meds,30,19,19,% adherent (≥80%),1 med,All other person-years,11185,28.75,26.33,2.42,0.0
+# conditions,20,14,15,% adherent (≥80%),2 conditions,All other person-years,7548,25.6,27.88,-2.28,0.0003
+Adherent vs not adherent,8,5,5,Age (years),Adherent (≥80%),Not adherent (<80%),7826,60.52,58.43,2.09,0.0
+Sex,6,6,6,% adherent (≥80%),Female,All other person-years,16088,26.45,28.33,-1.87,0.001
+Dose quartile,20,3,4,% adherent (≥80%),Q1 (lowest),All other person-years,7058,28.63,26.91,1.72,0.0105
+Dosing frequency,20,12,12,% adherent (≥80%),2x_daily,All other person-years,13143,26.62,27.83,-1.21,0.0369
