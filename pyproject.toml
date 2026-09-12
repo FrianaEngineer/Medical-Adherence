@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "MEPS and CMS medication adherence analysis notebooks"
 requires-python = ">=3.11"
 dependencies = [
+    "imbalanced-learn>=0.13.0",
     "ipykernel>=6.29.0",
     "jupyterlab>=4.2.0",
     "matplotlib>=3.9.0",

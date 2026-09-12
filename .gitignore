@@ -240,6 +240,9 @@ data/
 .codex
 
 
+#Fitted estimators cached by the modeling notebooks (tens of MB each)
+Notebooks/**/model_cache*/*.joblib
+
 #Mentor Files
 Study_Plan/
 MEPS_CONTEXT.md
