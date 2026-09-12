@@ -1826,6 +1826,27 @@ def load_insight_table(name: str) -> pd.DataFrame | None:
     return load_table("all_years", name)
 
 
+def group_tests_by_characteristic(ttests: pd.DataFrame) -> pd.DataFrame:
+    """Keep each characteristic's tests adjacent, widest-gap characteristic first.
+
+    Inside a characteristic the rows run outcome by outcome, largest absolute gap
+    first, so Age group never gets split apart by a bigger Race gap.
+    """
+    gap = ttests["Diff (A−B)"].abs()
+    return (
+        ttests.assign(
+            _gap=gap,
+            _char_gap=gap.groupby(ttests["Characteristic"]).transform("max"),
+        )
+        .sort_values(
+            ["_char_gap", "Characteristic", "Outcome", "_gap"],
+            ascending=[False, True, True, False],
+        )
+        .drop(columns=["_gap", "_char_gap"])
+        .reset_index(drop=True)
+    )
+
+
 def trajectory_class_tables(
     person_traj: pd.DataFrame,
 ) -> tuple[pd.DataFrame, pd.DataFrame, int, int]:
@@ -3003,9 +3024,7 @@ with tab_insights:
                     table = table[table["Outcome"] == outcome_pick]
                 if fdr_only:
                     table = table[table["Significant (FDR<0.05)"]]
-                table = table.sort_values(
-                    "Diff (A−B)", key=abs, ascending=False
-                ).reset_index(drop=True)
+                table = group_tests_by_characteristic(table)
 
                 st.dataframe(
                     table,
@@ -3023,7 +3042,8 @@ with tab_insights:
                     },
                 )
                 st.caption(
-                    f"{len(table):,} of {len(insight_ttests):,} tests shown · "
+                    f"{len(table):,} of {len(insight_ttests):,} tests shown, grouped by "
+                    f"characteristic · "
                     f"{int(insight_ttests['Significant (p<0.05)'].sum()):,} significant at "
                     f"raw p<0.05 · "
                     f"{int(insight_ttests['Significant (FDR<0.05)'].sum()):,} after BH-FDR."
