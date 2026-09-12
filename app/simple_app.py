@@ -1811,6 +1811,13 @@ TRAJECTORY_CLASSES = [
 ]
 TTESTS_CSV = f"person_year_ttests_{INSIGHTS_THRESHOLD}pct.csv"
 CHARACTERISTIC_SUMMARY_CSV = f"characteristic_summary_{INSIGHTS_THRESHOLD}pct.csv"
+# Test tallies and the q-value are covered on the Significant subgroups sub-tab.
+CHARACTERISTIC_SUMMARY_DROP_COLS = [
+    "N tests",
+    "N significant (FDR)",
+    "N significant (raw p)",
+    "q (BH-FDR)",
+]
 TRAJECTORY_CSV = (
     f"adherence_trajectories_{INSIGHTS_THRESHOLD}pct_margin{TRAJECTORY_MARGIN_PP}.csv"
 )
@@ -1860,21 +1867,6 @@ def significant_levels_table(ttests: pd.DataFrame) -> pd.DataFrame:
             }
         )
         .reset_index(drop=True)
-    )
-
-
-def tests_by_characteristic(ttests: pd.DataFrame) -> pd.DataFrame:
-    """How many tests each characteristic × outcome ran, and how many landed."""
-    return (
-        ttests.groupby(["Characteristic", "Outcome"], observed=True)
-        .agg(
-            **{
-                "N tests": ("p", "size"),
-                "N sig (raw p)": ("Significant (p<0.05)", "sum"),
-                "N sig (FDR)": ("Significant (FDR<0.05)", "sum"),
-            }
-        )
-        .reset_index()
     )
 
 
@@ -3070,39 +3062,24 @@ with tab_insights:
                 st.warning(f"`{CHARACTERISTIC_SUMMARY_CSV}` not found — rerun the notebook.")
             else:
                 st.caption(
-                    "One row per characteristic: how many of its tests landed, plus the "
-                    "single strongest FDR-significant effect it produced."
+                    "One row per characteristic: the single strongest FDR-significant "
+                    "effect it produced."
                 )
                 st.dataframe(
-                    insight_summary,
+                    insight_summary[
+                        [
+                            c
+                            for c in insight_summary.columns
+                            if c not in CHARACTERISTIC_SUMMARY_DROP_COLS
+                        ]
+                    ],
                     use_container_width=True,
                     hide_index=True,
                     column_config={
-                        "N tests": n_col,
-                        "N significant (FDR)": n_col,
-                        "N significant (raw p)": n_col,
                         "N (person-years)": n_col,
                         "Mean (level)": pct_col,
                         "Mean (comparison)": pct_col,
                         "Gap": pct_col,
-                        "q (BH-FDR)": p_col,
-                    },
-                )
-
-            if insight_ttests is not None:
-                st.subheader("Test counts by characteristic and outcome")
-                st.caption(
-                    "Every Welch test in the notebook, grouped by what was compared "
-                    "(the adherent rate, the raw adherence ratio, or a covariate)."
-                )
-                st.dataframe(
-                    tests_by_characteristic(insight_ttests),
-                    use_container_width=True,
-                    hide_index=True,
-                    column_config={
-                        "N tests": n_col,
-                        "N sig (raw p)": n_col,
-                        "N sig (FDR)": n_col,
                     },
                 )
 
